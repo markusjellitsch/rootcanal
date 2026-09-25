@@ -2121,14 +2121,23 @@ impl IsoManager {
                 .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
         }
 
-        // Validate each BIS_Index (1-31).
+        // Validate each BIS_Index (1-31), and reject duplicates so each
+        // requested BIS maps to exactly one BIS connection handle.
         // Spec: "If any element of the BIS[i] parameter is not in the range
         // 0x01 to 0x1F, the Controller shall return the error code Invalid HCI
         // Command Parameters."
-        if let Some(bis_id) = bis_indices.iter().find(|bis| !(0x01..=0x1F).contains(*bis)) {
-            println!("LE BIG Create Sync: Invalid BIS index 0x{:02X}", bis_id);
-            return self
-                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        let mut requested_bis = std::collections::HashSet::new();
+        for bis_id in &bis_indices {
+            if !(0x01..=0x1F).contains(bis_id) {
+                println!("LE BIG Create Sync: Invalid BIS index 0x{:02X}", bis_id);
+                return self
+                    .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+            }
+            if !requested_bis.insert(*bis_id) {
+                println!("LE BIG Create Sync: Duplicate BIS index 0x{:02X}", bis_id);
+                return self
+                    .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+            }
         }
 
         // Validate the Sync_Handle: it must refer to an established periodic
