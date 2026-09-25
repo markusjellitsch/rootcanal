@@ -204,6 +204,11 @@ packet LePeriodicAdvertisingPdu : LinkLayerPacket (type = LE_PERIODIC_ADVERTISIN
   sid: 8, // 0xff when not provided
   tx_power: 8,
   advertising_interval: 16,
+  // On-air the ACAD and the AdvData are both AD structures inside the Extended
+  // Header of the AUX_SYNC_IND payload (Vol 6, Part B § 2.3.2.3.2). As with the
+  // extended advertising PDU, they are modeled here as flat transport fields
+  // for the emulated link. The ACAD blob holds a sequence of AD structures
+  // ([AD Length][AD Type][AD Data]...), e.g. a BIGInfo (AD Type 0x2C).
   _size_(acad) : 8,
   acad : 8[],
   advertising_data: 8[],

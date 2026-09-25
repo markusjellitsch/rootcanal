@@ -1886,6 +1886,27 @@ impl IsoManager {
             return;
         }
 
+        // Determine the derived parameters up front so that any invalid
+        // combination is rejected before the BIG configuration or any BIS
+        // connection is created (cf Vol 4, Part E § 7.8.65). The controller is
+        // free to choose these values; this follows the same derivation used for
+        // the BIGInfo (see BigConfig::big_info).
+        let iso_interval = (sdu_interval as f64 / 1250.0).ceil() as u16;
+        let bn = 1;
+        let nse = bn * (rtn + 1);
+        let pto = 0;
+        let irc = rtn + 1;
+        let max_pdu = max_sdu;
+
+        // 14. Validate NSE
+        // Spec: "The Controller shall not use an NSE value greater than 31"
+        // (the derived NSE shall be in the range 0x01 to 0x1F).
+        if nse > 31 {
+            println!("LE Create BIG: Invalid NSE 0x{:02X}", nse);
+            self.send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+            return;
+        }
+
         // 11. Validate Packing
         // Spec: "The Packing parameter shall be one of the values: 0x00 (Sequential),
         // 0x01 (Interleaved)."
@@ -1948,21 +1969,6 @@ impl IsoManager {
                 },
             );
             bis_connection_handles.push(bis_connection_handle);
-        }
-
-        let iso_interval = (sdu_interval as f64 / 1250.0).ceil() as u16;
-
-        // Parameter Derivation
-        let bn = 1;
-        let nse = bn * (rtn + 1);
-        let pto = 0;
-        let irc = rtn + 1;
-        let max_pdu = max_sdu;
-
-        if nse > 31 {
-            println!("LE Create BIG: Invalid NSE 0x{:02X}", nse);
-            self.send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
-            return;
         }
 
         self.send_hci_event(hci::LeCreateBigComplete {
@@ -2103,6 +2109,28 @@ impl IsoManager {
                 .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
         }
 
+        // Validate Big_Sync_Timeout (units 10 ms, range 0x000A-0x4000).
+        // Spec: "The Big_Sync_Timeout parameter shall be in the range
+        // 0x000A to 0x4000."
+        if !(0x000A..=0x4000).contains(&big_sync_timeout) {
+            println!(
+                "LE BIG Create Sync: Invalid Big_Sync_Timeout 0x{:04X}",
+                big_sync_timeout
+            );
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        // Validate each BIS_Index (1-31).
+        // Spec: "If any element of the BIS[i] parameter is not in the range
+        // 0x01 to 0x1F, the Controller shall return the error code Invalid HCI
+        // Command Parameters."
+        if let Some(bis_id) = bis_indices.iter().find(|bis| !(0x01..=0x1F).contains(*bis)) {
+            println!("LE BIG Create Sync: Invalid BIS index 0x{:02X}", bis_id);
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
         // Validate the Sync_Handle: it must refer to an established periodic
         // advertising sync.
         let Some((advertiser_address, advertising_sid)) = self.ops.get_sync_info(sync_handle)
@@ -2132,6 +2160,16 @@ impl IsoManager {
             });
             return;
         };
+
+        // Validate that each requested BIS index is present in the BIG.
+        // Spec: "If any element of the BIS[i] parameter is not a BIS of the
+        // BIG, the Controller shall return the error code Invalid HCI Command
+        // Parameters."
+        if bis_indices.iter().any(|bis| *bis > big_info.num_bis) {
+            println!("LE BIG Create Sync: a BIS index exceeds Num_BIS {}", big_info.num_bis);
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
 
         // Validate the Encryption parameter against the BIG configuration.
         if big_info.encryption && encryption == 0 {
