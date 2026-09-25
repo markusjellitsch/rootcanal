@@ -30,6 +30,8 @@ tests = [
     "LL.CIS.PER.BV_02_C",
     "LL.BIS.BRD.BV_01_C",
     "LL.BIS.BRD.BV_02_C",
+    "LL.BIS.BRD.BV_24_C",
+    "LL.BIS.BRD.BV_34_C",
     "LL.BIS.BRD.BV_23_C",
 
     "LL.CON_.CEN.BV_41_C",
