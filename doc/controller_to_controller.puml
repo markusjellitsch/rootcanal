@@ -1,0 +1,96 @@
+@startuml
+!pragma useVerticalIf on
+title "RootCanal: How controller instances communicate with each other\n(in-memory broadcast through the virtual PhyLayer)"
+scale 0.9
+
+' ------------------------------------------------------------------
+' Participants
+' ------------------------------------------------------------------
+actor "HOST A\n(Central/client)" as HA
+actor "HOST B\n(Peripheral/server)" as HB
+control "CPP Ctrl A\n(LeController)" as CA
+control "CPP Ctrl B\n(LeController)" as CB
+entity "PhyDevice A\n(addr X)" as PDA
+entity "PhyDevice B\n(addr Y)" as PDB
+entity "PhyLayer::BR_EDR\n/ PhyLayer::LOW_ENERGY" as PHY
+entity "Sniffer Device\n(optional, in PHY)" as SNIF
+
+note right of PHY
+  PhyLayer holds a list of PhyDevice shared_ptrs
+  registered on it. Two default phys are created in
+  SetUpTestChannel(): "BR_EDR" and "LOW_ENERGY".
+  A device/controller can be on several phys at once.
+
+  PhyLayer::Send() broadcasts the packet to EVERY
+  device except the sender (so all "listeners",
+  including sniffers, see it).
+
+  RSSI between two devices is fabricated by
+  ComputeRssi() (no geometry by default).
+end note
+
+HA -> CA: HCI_LE_Create_Connection (over HCI channel)
+activate CA
+CA -> CA: HandleCommand -> LeCreateConnection\n(allocate ACL handle, remember state)
+CA -> PDA: SendLinkLayerPacket(LeConnect{src:X, dst:Y})\n   -> PhyDevice::Send(data, LOW_ENERGY, tx_power)
+activate PDA
+PDA -> PHY: PhyLayer::Send(packet, tx_power, sender_id=idevA)
+activate PHY
+
+' broadcast fan-out
+PHY -> PDB: PhyDevice::Receive(packet, LOW_ENERGY, rssi)\n   (PhyDevice::Receive -> device_->ReceiveLinkLayerPacket)
+PHY -> SNIF: (optional) Sniffer::ReceiveLinkLayerPacket -> INFO log
+deactivate PDA
+
+activate PDB
+PDB -> CB: CTRL_B.ReceiveLinkLayerPacket(LeConnect, rssi)
+activate CB
+CB -> CB: Handle as incoming connect request,\nprepare response, then:
+CB -> PDB: SendLinkLayerPacket(LeConnectComplete{src:Y, dst:X})
+activate PDB
+PDB -> PHY: PhyLayer::Send(...)  (back the other way)
+PHY -> PDA: PhyDevice::Receive -> CA.ReceiveLinkLayerPacket
+deactivate PDB
+deactivate PHY
+deactivate PDB
+
+CA -> CA: HandleCon/SetupLeAcl,\nemit HCI_LE_Connection_Complete to HOST A
+CA -> HA: HCI event
+deactivate CB
+
+== Once the two controllers have a direct ACL link ==
+
+note right of CA
+  For BLE, an established ACL connection between the two
+  controllers is emulated at the PhyLayer level by the
+  LLCP packets (the Rust link layer's LLCP state machine,
+  e.g. LL_VERSION_IND / LL_FEATURE_REQ etc.), and the ACL
+  data frames sent by the hosts ride along as "ACL" type
+  link layer packets.
+end note
+
+HA -> CA: ACL data (from host A's client)
+CA -> PDA: SendLinkLayerPacket(Acl{src:X, dst:Y, acl_payload})
+PDA -> PHY: PhyLayer::Send (LOW_ENERGY)
+PHY -> PDB: Receive -> CB.ReceiveLinkLayerPacket
+CB -> HB: HandleAcl -> sends ACL data to HOST B
+
+' BR/EDR path uses LMP packets through the Rust LinkManager
+note right of CA
+  On the BR/EDR PhyLayer, controllers exchange LMP packets
+  (PAGE, PAGE_RESPONSE, LMP procedures) — these are shaped
+  by the Rust LinkManager (rust/src/lmp) and reach the air
+  via the same PhyDevice -> PhyLayer -> broadcast route.
+end note
+
+== A packet is always broadcast, never unicast ==
+
+note right of PHY
+  There is no direct socket between controller A and
+  controller B. Sending a link-layer packet from one
+  controller simply calls into the shared PhyLayer which
+  iterates its device list and delivers a copy to every
+  registered PhyDevice (except the originator).
+end note
+
+@enduml

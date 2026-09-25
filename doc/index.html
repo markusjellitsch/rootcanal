@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RootCanal — Internal Architecture Charts</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel2: #273449;
+    --fg: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.55;
+  }
+  header {
+    padding: 28px 40px 20px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(56,189,248,0.08), transparent);
+  }
+  header h1 { margin: 0 0 4px; font-size: 24px; }
+  header p { margin: 0; color: var(--muted); }
+  nav {
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(15,23,42,0.92);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 40px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  nav a {
+    color: var(--accent); text-decoration: none;
+    padding: 6px 12px; border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  nav a:hover { background: var(--panel2); border-color: var(--border); }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px 40px 80px; }
+  section { margin-top: 40px; }
+  h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  .desc { color: var(--muted); max-width: 1000px; }
+  .desc code {
+    background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+    font-size: 0.9em; color: #7dd3fc;
+  }
+  figure {
+    margin: 20px 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  figure img {
+    width: 100%; height: auto; display: block;
+    border-radius: 6px; background: #fff;
+  }
+  figcaption { margin-top: 10px; color: var(--muted); font-size: 0.9em; }
+  .src {
+    display: inline-block; margin-top: 8px;
+    color: var(--muted); font-size: 0.85em;
+  }
+  .src a { color: var(--accent); }
+  table.links {
+    border-collapse: collapse; margin-top: 12px;
+  }
+  table.links td { padding: 8px 20px 8px 0; }
+  table.links a { color: var(--accent); }
+  footer {
+    color: var(--muted); text-align: center;
+    padding: 30px; border-top: 1px solid var(--border);
+    font-size: 0.85em;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RootCanal — Internal Architecture Charts</h1>
+  <p>Generated PlantUML sequence diagrams explaining how RootCanal works internally.</p>
+</header>
+
+<nav>
+  <a href="#overview">Overview</a>
+  <a href="#ffi">1. C++ ↔ Rust FFI</a>
+  <a href="#inter-controller">2. Controller ↔ Controller</a>
+  <a href="#tracing">3. BLE LL PDU Tracing / Wireshark</a>
+</nav>
+
+<main>
+
+<section id="overview">
+  <h2><span class="num">0.</span>Overview</h2>
+  <p class="desc">
+    RootCanal is a virtual Bluetooth Controller. A running instance exposes four TCP ports:
+    <code>test_port</code> (6401), <code>hci_port</code> (6402), <code>link_port</code> (6403,
+    BR/EDR Phy) and <code>link_ble_port</code> (6404, LE Phy). Every HCI TCP connection spawns a new
+    virtual controller (a <code>HciDevice</code> = <code>DualModeController</code>). All controllers
+    live in one process, in one <code>TestModel</code>, and exchange packets purely in memory through
+    virtual <code>PhyLayer</code>s. The Rust modules (BR/EDR Link&nbsp;Manager + LE Link&nbsp;Layer)
+    are embedded in the C++ controllers through a C ABI.
+  </p>
+  <table class="links">
+    <tr><td>Source files</td><td>Planted from</td></tr>
+    <tr><td>PlantUML sources</td><td><a href="cpp_to_rust_ffi.puml">cpp_to_rust_ffi.puml</a>, <a href="controller_to_controller.puml">controller_to_controller.puml</a>, <a href="ble_ll_tracing_wireshark.puml">ble_ll_tracing_wireshark.puml</a></td></tr>
+    <tr><td>Diagrams (SVG)</td><td><a href="cpp_to_rust_ffi.svg">ffi.svg</a>, <a href="controller_to_controller.svg">controller.svg</a>, <a href="ble_ll_tracing_wireshark.svg">tracing.svg</a></td></tr>
+    <tr><td>Diagrams (PNG)</td><td><a href="cpp_to_rust_ffi.png">ffi.png</a>, <a href="controller_to_controller.png">controller.png</a>, <a href="ble_ll_tracing_wireshark.png">tracing.png</a></td></tr>
+  </table>
+</section>
+
+<section id="ffi">
+  <h2><span class="num">1.</span>C++ &rarr; Rust communication (FFI bridge)</h2>
+  <p class="desc">
+    There are <em>two</em> FFI layers between C++ and Rust:
+    <strong>(A)</strong> the <em>outer</em> C ABI (<code>model/controller/ffi.h|.cc</code> →
+    <code>rust/src/ffi.rs</code>) that C++ uses to drive the Rust Link&nbsp;Manager /
+    Link&nbsp;Layer, and <strong>(B)</strong> the <em>inner</em> <code>ControllerOps</code>
+    callback table (a <code>#[repr(C)]</code> struct of function pointers) that Rust uses to call
+    back into C++, with <code>user_pointer</code> pointing at the owning
+    <code>BrEdrController*</code> / <code>LeController*</code>.
+  </p>
+  <figure>
+    <a href="cpp_to_rust_ffi.png"><img src="cpp_to_rust_ffi.png" alt="C++ to Rust FFI sequence diagram"></a>
+    <figcaption>
+      Sequence diagram: HCI command entry, routing into the Rust module, Rust calling back into
+      C++ via <code>ControllerOps</code>, and the controller / destroy / link lifecycle +
+      timer ticks.
+    </figcaption>
+  </figure>
+  <span class="src">PlantUML: <a href="cpp_to_rust_ffi.puml">cpp_to_rust_ffi.puml</a></span>
+</section>
+
+<section id="inter-controller">
+  <h2><span class="num">2.</span>Controller instance &rarr; Controller instance</h2>
+  <p class="desc">
+    There are <em>no sockets between controllers</em>. To send a link-layer packet a controller
+    calls through its <code>PhyDevice</code> into the shared <code>PhyLayer</code>, which
+    <strong>broadcasts</strong> the packet to every registered device
+    (except the sender). RSSI between two devices is fabricated by
+    <code>ComputeRssi()</code>.
+  </p>
+  <figure>
+    <a href="controller_to_controller.png"><img src="controller_to_controller.png" alt="Controller to controller sequence diagram"></a>
+    <figcaption>
+      Sequence diagram: an LE connection setup — Host A (central) connects to Host B (peripheral) —
+      showing the virtual-air broadcast through the PhyLayer, plus a sniffer observing the traffic.
+    </figcaption>
+  </figure>
+  <span class="src">PlantUML: <a href="controller_to_controller.puml">controller_to_controller.puml</a></span>
+</section>
+
+<section id="tracing">
+  <h2><span class="num">3.</span>Tracing BLE Link-Layer PDUs with Wireshark</h2>
+  <p class="desc">
+    Key finding: RootCanal does <strong>not</strong> natively export BLE Link-Layer PDUs in a
+    Wireshark-dissectable format. <code>--enable_hci_sniffer</code> captures the HCI layer
+    (<code>LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR</code>, 201); <code>--enable_baseband_sniffer</code>
+    only emits BR/EDR PAGE + LMP (<code>LINKTYPE_BLUETOOTH_BREDR_BB</code>, 255). To observe raw LE
+    LL PDUs you attach to the LE Phy TCP port (6404) using custom PDL framing, or use the
+    <code>sniffer</code> device for console logs — and converting those to a Wireshark LE&nbsp;LL
+    pcap requires your own little converter.
+  </p>
+  <figure>
+    <a href="ble_ll_tracing_wireshark.png"><img src="ble_ll_tracing_wireshark.png" alt="BLE LL tracing and Wireshark sequence diagram"></a>
+    <figcaption>
+      Sequence diagram: the four built-in tracing options (HCI sniffer, baseband sniffer, sniffer
+      device, raw LE Phy port) and how (or whether) each feeds Wireshark.
+    </figcaption>
+  </figure>
+  <span class="src">PlantUML: <a href="ble_ll_tracing_wireshark.puml">ble_ll_tracing_wireshark.puml</a></span>
+</section>
+
+</main>
+
+<footer>
+  Generated with PlantUML 1.2026.8 &middot; charts/ &middot; see also the <a href="../README.md" style="color:var(--accent)">repo README</a>
+</footer>
+
+</body>
+</html>

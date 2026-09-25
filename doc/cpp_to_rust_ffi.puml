@@ -1,0 +1,125 @@
+@startuml
+!pragma useVerticalIf on
+title "RootCanal: How C++ communicates with the Rust modules (FFI bridge)\nmodel/controller/ffi.h|.cc  +  rust/src/ffi.rs  +  ControllerOps callbacks"
+scale 0.9
+
+' ------------------------------------------------------------------
+' Participants
+' ------------------------------------------------------------------
+actor "HCI Host\n(TCP client)" as HOST
+boundary "HCI Socket\n(HciSocketTransport\n/ HciSniffer)" as SOCK
+control "CPP: DualModeController\n(BrEdrController +\nLeController)" as CTRL
+entity "CPP: ControllerOps\n(function-pointer table)" as OPS
+entity "RUST: LinkManager\n(or LinkLayer / llcp)" as RUST
+entity "RUST: Manager\n(internal packet\nprocessing)" as RUSTMGR
+database "PhyLayer (air)" as PHY
+
+note right of CTRL
+  In C++ there is no separate "Rust controller" object.
+  The Rust code is a pure-library state machine embedded in
+  the C++ DualModeController. There are **two** FFI layers:
+
+  (A) "outer" C ABI   = the C++ controller calls INTO Rust
+      (ffi_controller_receive_* and link_manager_*/link_layer_*).
+
+  (B) "inner" callbacks = Rust calls BACK into C++ through the
+      #[repr(C)] `ControllerOps` struct of function pointers.
+end note
+
+== 1. HCI command enters the controller (C++ host path) ==
+
+HOST -> SOCK: H4 frame (CMD/ACL/SCO/ISO)
+SOCK -> CTRL: ffi_controller_receive_hci(controller, idc, data, len)
+activate CTRL
+CTRL -> CTRL: reinterprets as DualModeController*,\nwraps bytes, dispatches on idc\n(HandleCommand / HandleAcl / HandleSco / HandleIso)
+note right
+  idc enum: CMD=1, ACL=2, SCO=3, EVT=4, ISO=5
+end note
+
+' ---- HCI command -> routed to Rust Link Manager ----
+CTRL -> OPS: (borrows controller_ops_ table)
+activate OPS
+CTRL -> RUST: link_manager_ingest_hci(lm, data, len)\n   or link_layer_ingest_hci(ll, data, len)
+note right
+  These are #[unsafe(no_mangle)] pub extern "C" fns in
+  rust/src/ffi.rs. They:
+  - Rc::from_raw() to recover the Arc/Rc handle
+  - decode the HCI command from the byte slice
+  - call lm.ingest_hci(packet) / ll.ingest_hci(packet)
+end note
+activate RUST
+RUST -> RUSTMGR: decode_full() -> hci::Command\nstate-machine processing
+activate RUSTMGR
+
+' ---- Rust needs a value only C++ holds: call back ----
+RUSTMGR -> OPS: ops.get_le_features() / get_extended_features() /\nget_handle(addr) / get_address(handle)
+note right
+  ControllerOps is #[repr(C)] { user_pointer, fn ptrs... }.
+  Calling one of these calls through a C function pointer
+  with `self.user_pointer` as the user arg.
+end note
+OPS -> CTRL: user_pointer = BrEdrController*/LeController*,\nC++ lambda reads connections_, features, etc.
+CTRL --> OPS: return value (u16/u64/bool/[u8;6]/\nperiodic_enabled/sid)
+OPS --> RUSTMGR: value
+
+' ---- Rust produced an HCI event to send to the host ----
+RUSTMGR -> OPS: ops.send_hci_event(event_bytes)
+note right
+  Inner callback again. C++ lambda:
+  EventBuilder::Create(event_code, payload)
+  -> controller->send_event_(...)
+end note
+OPS -> CTRL: send_event_(std::vector<uint8_t>)
+CTRL -> HOST: RegisterEventChannel callback ->\nffi_controller_new's send_hci(cookie,\nIdc::EVT, data, len) -> H4 over socket
+
+' ---- Rust produced an LLCP / LMP packet to go on the air ----
+RUSTMGR -> OPS: ops.send_llcp_packet(handle, pdu)   (LE)\n   ops.send_lmp_packet(to, pdu)          (BR/EDR)
+OPS -> CTRL: SendLeLinkLayerPacket(LlcpBuilder::Create(...))\n   or SendLinkLayerPacket(LmpBuilder::Create(...))
+deactivate RUSTMGR
+
+' ---- The Rust module serializes it and hands to phy ----
+RUST --> OPS: (impl returns to caller; object stays alive via Rc)
+deactivate RUST
+deactivate OPS
+CTRL -> PHY: RegisterLinkLayerChannel send_ll(data, phy, tx_power)\n-> PhyDevice::Send -> PhyLayer::Send (broadcast)
+deactivate CTRL
+
+== 2. Create / destroy lifecycle ==
+
+CTRL -> RUST: link_manager_create(ops) / link_layer_create(ops)\n   -> Rc::into_raw(Rc::new(Manager))
+note right
+  Called from the LeController / BrEdrController
+  constructor. controller_ops_ is filled with C++
+  lambdas and .user_pointer = this.
+end note
+RUST --> CTRL: *const LinkManager / *const LinkLayer (raw ptr)
+...
+CTRL -> RUST: link_manager_destroy(lm) / link_layer_destroy(ll)\n   -> Rc::from_raw (drops Rc)
+note right
+  RAII: the controllers hold the pointer in a
+  std::unique_ptr with a custom deleter set to the
+  *_destroy FFI function, so it is freed automatically.
+end note
+
+== 3. Link registration (add/remove a peer link) ==
+
+CTRL -> RUST: link_layer_add_link(ll, handle, peer_addr, role)\n   link_layer_remove_link(ll, handle, reason)\n   link_manager_add_link / link_manager_remove_link
+RUST --> CTRL: bool (ok)
+note right
+  These add an internal Link/Connection in the Rust
+  manager keyed by peer address or ACL handle.
+end note
+
+== 4. Timer tick (each scheduler period) ==
+
+CTRL -> RUST: link_manager_tick(lm) / link_layer_tick(ll)
+note right
+  Driven by DualModeController::Tick(), which is driven
+  by the AsyncManager's periodic timer. Rust runs any
+  due Link Manager / Link Layer procedures.
+end note
+RUST -> RUSTMGR: run pending procedures
+RUSTMGR -> OPS: (may emit HCI events / LL packets as above)
+deactivate RUST
+
+@enduml

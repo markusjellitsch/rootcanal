@@ -1,0 +1,107 @@
+@startuml
+!pragma useVerticalIf on
+title "RootCanal: How to trace BLE Link-Layer PDUs (and HCI) with Wireshark\nWhat the built-in sniffers cover - and what they don't"
+scale 0.9
+
+' ------------------------------------------------------------------
+' Participants
+' ------------------------------------------------------------------
+actor "User" as U
+control "rootcanal process" as RC
+control "Ctrl A\n(Central)" as CA
+control "Ctrl B\n(Peripheral)" as CB
+entity "PhyLayer\n(LOW_ENERGY / BR_EDR)" as PHY
+entity "HciSniffer\n(LINKTYPE 201)" as HS
+entity "BaseBandSniffer\n(LINKTYPE 255)" as BS
+entity "Sniffer device\n(INFO log)" as SNIF
+entity "LE Phy TCP server\n(link_ble_port 6404)" as LEPS
+entity "Wireshark" as WS
+
+note right of RC
+  RootCanal does **not** emit BLE Link-Layer PDUs in a
+  format Wireshark natively dissects out of the box.
+  Below are the three built-in tracing options and exactly
+  what each one captures.
+end note
+
+== Option A - HCI sniffer - HCI layer (Wireshark-native) ==
+
+U -> RC: launch with --enable_hci_sniffer\n(default hci port 6402)
+RC -> HS: wrap HciSocketTransport in HciSniffer per host,\nlinktype 201 = LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR
+HS -> WS: writes rootcanal_DEVICEID_ADDR.pcap\n(4-byte direction + H4 type byte + HCI payload)
+note right
+  Wireshark "Analyze -> Decode As" auto-dissects HCI H4.
+  You see HCI_LE_* commands/events, ACL data and L2CAP.
+  This is HCI, NOT the on-air LL PDUs.
+end note
+
+== Option B - Baseband sniffer - BR/EDR only ==
+
+U -> RC: launch with --enable_baseband_sniffer
+RC -> BS: register BaseBandSniffer on BR_EDR phy
+BS -> WS: writes baseband.pcap, linktype 255 =\nLINKTYPE_BLUETOOTH_BREDR_BB
+note right
+  From baseband_sniffer.cc this only handles
+  PacketType::PAGE and PacketType::LMP, synthesising
+  FHS/DM1 BR-EDR baseband records.
+  **BLE LL PDUs are NOT captured by this option.**
+end note
+
+== Option C - Sniffer device - LL packets to log, not pcap ==
+
+U -> RC: test port: add sniffer ADDR\n   add_device_to_phy ID LE_PHY_ID
+RC -> SNIF: register a Sniffer Device on the LE phy
+PHY -> SNIF: every LL packet whose src/dst matches\n   (ADV, SCAN, CONNECT, LLCP, ACL, ...)
+SNIF -> RC: INFO log: DIRECTION src -> dst (Type ...)
+note right
+  Great for seeing which LL PDUs flow on the virtual air
+  and in which direction, but only to the console/logs -
+  not dissected by Wireshark.
+end note
+
+== Option D - RAW LE LL PDUs via the LE Phy TCP port - custom framing ==
+
+U -> LEPS: TCP connect to --link_ble_port (default 6404)
+note right LEPS
+  This port is served by LinkLayerSocketDevice.
+  Each message frame = 4-byte little-endian length prefix
+  + serialized LinkLayerPacket (from packets/link_layer_packets.pdl).
+  A client connected here is itself a PhyDevice on the LE
+  phy: it can OBSERVE every LL PDU the controllers exchange,
+  and can even INJECT LL PDUs back.
+end note
+PHY -> LEPS: PhyLayer::Send -> LinkLayerSocketDevice::ReceiveLinkLayerPacket
+LEPS -> U: length prefix (uint32 LE) + LL packet bytes
+U -> U: parse with packets/link_layer_packets.pdl\n   (these are RootCanal's OWN LL PDU encodings:\n   LE_LEGACY_ADVERTISING_PDU=0x0B, LE_SCAN, LE_CONNECT,\n   LLCP=0x41, ACL, ISO...). Wireshark does NOT parse\n   this custom format directly.
+
+== To get true BLE on-air LL PDUs dissected in Wireshark ==
+
+note right
+  You must write a converter of your own:
+    1. capture via Option D (LE phy port)
+       or Option C (sniffer device),
+    2. translate each RootCanal LinkLayerPacket into the
+       Bluetooth LE LL PDU byte layout,
+    3. write PCAP records with linktype
+       LINKTYPE_BLUETOOTH_LE_LL (223) or
+       LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR (256).
+  Then Wireshark dissects ADV_IND, SCAN_REQ, CONNECT_IND,
+  LLCP control PDUs (LL_VERSION_IND, LL_FEATURE_REQ, ...)
+  and BLE data PDUs natively.
+end note
+
+== Deciding which to use ==
+
+note over RC, WS
+  +----------------------------+---------------------+-------------------------+
+  | what you want              | built-in option     | wireshark dissects ?    |
+  +----------------------------+---------------------+-------------------------+
+  | HCI commands / events      | --enable_hci_sniffer| YES (LINKTYPE 201 H4)   |
+  | BR/EDR baseband (PAGE,LMP) | --enable_baseband_sn| YES (LINKTYPE 255 BREDR)|
+  | Realtime LL flow (LE)      | sniffer device /    | console log / custom,   |
+  |                            | LE phy port 6404    | not native              |
+  | True BLE LE LL PDU pcap    | (none built-in)     | requires your converter |
+  +----------------------------+---------------------+-------------------------+
+end note
+
+@enduml
