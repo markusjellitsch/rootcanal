@@ -28,6 +28,7 @@ tests = [
     "LL.CIS.CEN.BV_26_C",
     "LL.CIS.PER.BV_01_C",
     "LL.CIS.PER.BV_02_C",
+    "LL.BIS.BRD.BV_01_C",
     "LL.CON_.CEN.BV_41_C",
     "LL.CON_.CEN.BV_43_C",
     "LL.CON_.INI.BV_08_C",

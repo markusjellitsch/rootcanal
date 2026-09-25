@@ -166,9 +166,13 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
                 packet = await self.controller.receive_ll()
                 pdu = ll.LinkLayerPacket.parse_all(packet)
 
+                ignored = False
                 for ignored_pdu in ignored_pdus:
                     if isinstance(pdu, ignored_pdu):
-                        continue
+                        ignored = True
+                        break
+                if ignored:
+                    continue
 
                 for expected_pdu in expected_pdus:
                     if isinstance(expected_pdu, type) and isinstance(pdu, expected_pdu):
