@@ -5493,9 +5493,6 @@ void LeController::IncomingLeConnectedIsochronousPdu(LinkLayerPacketView incomin
 void LeController::IncomingLeBroadcastIsochronousPdu(LinkLayerPacketView incoming) {
   auto pdu = model::packets::LeBroadcastIsochronousPduView::Create(incoming);
   ASSERT(pdu.IsValid());
-  auto data = pdu.GetData();
-  auto packet = std::vector(data.begin(), data.end());
-
   // Only deliver the BIS SDU to the Host if this receiver has established a
   // BIG sync with the broadcaster for that BIS.
   uint8_t big_handle = pdu.GetBigHandle();
@@ -5515,6 +5512,8 @@ void LeController::IncomingLeBroadcastIsochronousPdu(LinkLayerPacketView incomin
     return;
   }
 
+  auto data = pdu.GetData();
+  std::vector<uint8_t> packet(data.begin(), data.end());
   SendIsoToHost(bis_connection_handle, pdu.GetSequenceNumber(), std::move(packet));
 }
 
@@ -6520,12 +6519,12 @@ void LeController::LeScanning() {
 void LeController::LeSynchronization() {
   std::vector<uint16_t> removed_sync_handles;
   for (auto& [_, sync] : synchronized_) {
-    if (sync.timeout > std::chrono::steady_clock::now()) {
+    if (sync.timeout <= std::chrono::steady_clock::now()) {
       INFO(id_, "Periodic advertising sync with handle 0x{:x} lost", sync.sync_handle);
       removed_sync_handles.push_back(sync.sync_handle);
-    }
-    if (IsLeEventUnmasked(SubeventCode::LE_PERIODIC_ADVERTISING_SYNC_LOST)) {
-      send_event_(bluetooth::hci::LePeriodicAdvertisingSyncLostBuilder::Create(sync.sync_handle));
+      if (IsLeEventUnmasked(SubeventCode::LE_PERIODIC_ADVERTISING_SYNC_LOST)) {
+        send_event_(bluetooth::hci::LePeriodicAdvertisingSyncLostBuilder::Create(sync.sync_handle));
+      }
     }
   }
 
