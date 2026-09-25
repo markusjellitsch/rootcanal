@@ -47,6 +47,16 @@ pub struct ControllerOps {
         advertising_handle: u8,
         periodic_enabled: *mut bool,
     ) -> bool,
+    // SAFETY:
+    // - `user` must be exactly the value `ControllerOps::user_pointer`.
+    // - `address` must be a valid non-null pointer to a [u8; 6] array.
+    // - `sid` must be a valid non-null pointer to a `u8` value.
+    get_sync_info: unsafe extern "C" fn(
+        user: *mut (),
+        sync_handle: u16,
+        address: *mut [u8; 6],
+        sid: *mut u8,
+    ) -> bool,
 }
 
 impl ControllerOps {
@@ -109,6 +119,33 @@ impl ControllerOps {
         //    enforced by requirements on ControllerOps.
         unsafe {
             (self.get_advertiser_info)(self.user_pointer, advertising_handle, periodic_enabled)
+        }
+    }
+
+    /// Return the advertiser address and advertising SID associated with the
+    /// given established periodic advertising sync (Sync_Handle), if any.
+    #[allow(dead_code)]
+    pub(crate) fn get_sync_info(&self, sync_handle: u16) -> Option<(hci::Address, u8)> {
+        // # SAFETY
+        // - `self.user_pointer` is the value provided when the callbacks are registered.
+        //    The value is not manipulated in the rust module.
+        // - `address` and `sid` are valid pointers for the scope of the call.
+        // - `self.get_sync_info` is a valid function pointer
+        //    enforced by requirements on ControllerOps.
+        let mut address = [0u8; 6];
+        let mut sid: u8 = 0;
+        let found = unsafe {
+            (self.get_sync_info)(
+                self.user_pointer,
+                sync_handle,
+                &mut address as *mut [u8; 6],
+                &mut sid as *mut u8,
+            )
+        };
+        if found {
+            Some((hci::Address::from(&address), sid))
+        } else {
+            None
         }
     }
 }
@@ -418,6 +455,34 @@ pub unsafe extern "C" fn link_layer_get_big_info(
     }
 }
 
+/// Store the BIG information announced by a broadcaster on the periodic
+/// advertising train, keyed by the advertiser address and advertising SID
+/// (receiver side). This is used by HCI LE BIG Create Sync to establish a
+/// sync to the BIG.
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `advertiser_address` - Advertiser address of the periodic advertising train
+/// * `advertising_sid` - Advertising SID of the periodic advertising train
+/// * `info` - The BIG information received from the broadcaster
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointer
+/// - `advertiser_address` must be valid for reads of 6 bytes
+/// - `info` must be valid for reads of the size of BigInfoFfi
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn link_layer_le_big_info_received(
+    ll: *const LinkLayer,
+    advertiser_address: *const [u8; 6],
+    advertising_sid: u8,
+    info: *const crate::llcp::iso::BigInfoFfi,
+) {
+    let mut ll = ManuallyDrop::new(unsafe { Rc::from_raw(ll) });
+    let ll = Rc::get_mut(&mut ll).unwrap();
+    let advertiser_address = hci::Address::from(unsafe { &*advertiser_address });
+    let info = unsafe { &*info };
+    ll.store_big_info(advertiser_address, advertising_sid, (*info).into());
+}
+
 /// Query the CIS and CIG identifiers for a CIS established with
 /// the input CIS connection handle.
 /// Returns true if successful
@@ -452,6 +517,85 @@ pub unsafe extern "C" fn link_layer_get_cis_information(
                 *cis_id = cis.cis_id;
                 *max_sdu_tx = cis.max_sdu_tx().unwrap_or(0);
             }
+        })
+        .is_some()
+}
+
+/// Query the BIG/BIS identifiers for a BIS established with the input BIS
+/// connection handle.
+/// Returns true if successful
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `bis_connection_handle` - BIS connection handle
+/// * `big_handle` - Returns the BIG identifier
+/// * `bis_id` - Returns the BIS identifier
+/// * `advertising_handle` - Returns the advertising handle of the BIG
+/// * `max_sdu` - Returns the max SDU length
+/// * `role` - Returns the role (0 = central, 1 = peripheral)
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointers
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn link_layer_get_bis_information(
+    ll: *const LinkLayer,
+    bis_connection_handle: u16,
+    big_handle: *mut u8,
+    bis_id: *mut u8,
+    advertising_handle: *mut u8,
+    max_sdu: *mut u16,
+    role: *mut u8,
+) -> bool {
+    let mut ll = ManuallyDrop::new(unsafe { Rc::from_raw(ll) });
+    let ll = Rc::get_mut(&mut ll).unwrap();
+    match ll.get_bis_information(bis_connection_handle) {
+        Some((
+            big_handle_value,
+            bis_id_value,
+            advertising_handle_value,
+            max_sdu_value,
+            role_value,
+        )) => {
+            unsafe {
+                *big_handle = big_handle_value;
+                *bis_id = bis_id_value;
+                *advertising_handle = advertising_handle_value;
+                *max_sdu = max_sdu_value;
+                *role = match role_value {
+                    hci::Role::Central => 0,
+                    hci::Role::Peripheral => 1,
+                };
+            };
+            true
+        }
+        None => false,
+    }
+}
+
+/// Query the connection handle for a synchronized BIS (receiver side), i.e. a
+/// BIS of a BIG broadcast by the advertiser with the input address.
+/// Returns true if successful
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `advertiser_address` - Advertiser address of the periodic advertising train
+/// * `bis_id` - Identifier of the requested BIS
+/// * `bis_connection_handle` - Returns the handle of the BIS if synchronized
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointers
+/// - `advertiser_address` must be valid for reads for 6 bytes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn link_layer_get_bis_sync_connection_handle(
+    ll: *const LinkLayer,
+    advertiser_address: *const [u8; 6],
+    bis_id: u8,
+    bis_connection_handle: *mut u16,
+) -> bool {
+    let mut ll = ManuallyDrop::new(unsafe { Rc::from_raw(ll) });
+    let ll = Rc::get_mut(&mut ll).unwrap();
+    let advertiser_address = hci::Address::from(unsafe { &*advertiser_address });
+    ll.get_bis_sync_connection_handle(advertiser_address, bis_id)
+        .map(|handle| unsafe {
+            *bis_connection_handle = handle;
         })
         .is_some()
 }

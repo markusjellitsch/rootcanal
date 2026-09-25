@@ -179,6 +179,39 @@ impl From<BigInfo> for BigInfoFfi {
     }
 }
 
+impl From<BigInfoFfi> for BigInfo {
+    fn from(value: BigInfoFfi) -> Self {
+        Self {
+            num_bis: value.num_bis,
+            nse: value.nse,
+            iso_interval: value.iso_interval,
+            bn: value.bn,
+            pto: value.pto,
+            irc: value.irc,
+            max_pdu: value.max_pdu,
+            sdu_interval: value.sdu_interval,
+            max_sdu: value.max_sdu,
+            phy: value.phy,
+            framing: value.framing,
+            encryption: value.encryption != 0,
+        }
+    }
+}
+
+/// BIG synchronization (Synchronized Receiver role) configuration.
+#[derive(Clone, Debug, Default)]
+struct BigSyncConfig {
+    big_handle: u8,
+    sync_handle: u16,
+    encryption: bool,
+    broadcast_code: [u8; 16],
+    mse: u8,
+    big_sync_timeout: u16,
+    bis: Vec<u8>,
+    advertiser_address: hci::Address,
+    advertising_sid: u8,
+}
+
 /// CIS configuration.
 #[derive(Clone, Debug, Default)]
 struct CisConfig {
@@ -384,6 +417,12 @@ pub struct IsoManager {
     cig_config: HashMap<u8, CigConfig>,
     /// BIG configuration.
     big_config: HashMap<u8, BigConfig>,
+    /// BIG information announced by a broadcaster on the periodic advertising
+    /// train, keyed by (advertiser_address, advertising_sid). Used to complete
+    /// HCI LE BIG Create Sync on the receiver side.
+    known_big_info: HashMap<(hci::Address, u8), BigInfo>,
+    /// Active BIG synchronizations on this receiver, keyed by BIG_Handle.
+    big_sync_config: HashMap<u8, BigSyncConfig>,
     /// CIS configuration.
     cis_config: HashMap<(u8, u8), CisConfig>,
     /// BIS configuration.
@@ -409,6 +448,8 @@ impl IsoManager {
             ops,
             cig_config: Default::default(),
             big_config: Default::default(),
+            known_big_info: Default::default(),
+            big_sync_config: Default::default(),
             cis_config: Default::default(),
             bis_connections: Default::default(),
             acl_connections: Default::default(),
@@ -1985,6 +2026,209 @@ impl IsoManager {
             .values()
             .find(|big| big.advertising_handle == advertising_handle)
             .map(BigConfig::big_info)
+    }
+
+    /// Store the BIG information announced by a broadcaster on the periodic
+    /// advertising train, keyed by (advertiser_address, advertising_sid).
+    pub fn store_big_info(&mut self, advertiser_address: hci::Address, advertising_sid: u8,
+                          big_info: BigInfo) {
+        self.known_big_info.insert((advertiser_address, advertising_sid), big_info);
+    }
+
+    /// Return the (big_handle, bis_id, advertising_handle, max_sdu, role) for a
+    /// BIS connection handle, if it exists.
+    pub fn get_bis_information(
+        &self,
+        bis_connection_handle: u16,
+    ) -> Option<(u8, u8, u8, u16, hci::Role)> {
+        self.bis_connections.get(&bis_connection_handle).map(|bis| {
+            (
+                bis.big_handle,
+                bis.bis_id,
+                bis.advertising_handle,
+                bis.max_sdu,
+                bis.role,
+            )
+        })
+    }
+
+    /// Return the connection handle of a BIS that is part of an active BIG
+    /// sync with the given advertiser, if any (receiver side).
+    pub fn get_bis_sync_connection_handle(&self, advertiser_address: hci::Address,
+                                          bis_id: u8) -> Option<u16> {
+        self.bis_connections.values().find_map(|bis| {
+            let synchronized = self
+                .big_sync_config
+                .get(&bis.big_handle)
+                .filter(|config| {
+                    config.advertiser_address == advertiser_address && config.bis.contains(&bis_id)
+                });
+            (synchronized.is_some() && bis.role == hci::Role::Peripheral && bis.bis_id == bis_id)
+                .then_some(bis.bis_connection_handle)
+        })
+    }
+
+    /// Handle HCI LE BIG Create Sync command (Vol 4, Part E § 7.8.106), used by
+    /// a Synchronized Receiver to synchronize to a BIG described in the
+    /// periodic advertising train identified by the Sync_Handle.
+    pub fn hci_le_big_create_sync(&mut self, packet: hci::LeBigCreateSync) {
+        let command_status =
+            |status| hci::LeBigCreateSyncStatus { status, num_hci_command_packets: 1 };
+
+        let big_handle = packet.big_handle();
+        let sync_handle = packet.sync_handle();
+        let encryption: u8 = packet.encryption().into();
+        let broadcast_code = packet.broadcast_code();
+        let mse = packet.mse();
+        let big_sync_timeout = packet.big_sync_timeout();
+        let bis_indices: Vec<u8> = packet.bis().to_vec();
+
+        // Validate BIG_Handle range (0x00-0xEF).
+        if big_handle > 0xEF {
+            println!("LE BIG Create Sync: Invalid BIG_Handle 0x{:02X}", big_handle);
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        // Reject if the BIG_Handle is already in use by another BIG sync.
+        if self.big_sync_config.contains_key(&big_handle) {
+            println!("LE BIG Create Sync: BIG_Handle 0x{:02X} already in use", big_handle);
+            return self.send_hci_event(command_status(hci::ErrorCode::CommandDisallowed));
+        }
+
+        // Validate Num_BIS (1-31).
+        if bis_indices.is_empty() || bis_indices.len() > 31 {
+            println!("LE BIG Create Sync: Invalid BIS list length {}", bis_indices.len());
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        // Validate the Sync_Handle: it must refer to an established periodic
+        // advertising sync.
+        let Some((advertiser_address, advertising_sid)) = self.ops.get_sync_info(sync_handle)
+        else {
+            println!(
+                "LE BIG Create Sync: Sync_Handle 0x{:04X} is not established",
+                sync_handle
+            );
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        };
+
+        // Look up the BIG information announced by the broadcaster on the
+        // periodic advertising train.
+        let Some(big_info) = self.known_big_info.get(&(advertiser_address, advertising_sid))
+        else {
+            println!(
+                "LE BIG Create Sync: No BIGInfo received for sync_handle 0x{:04X}",
+                sync_handle
+            );
+            // Send command status success, then immediately generate a sync
+            // loss, as the receiver fails to synchronize with the BIG.
+            self.send_hci_event(command_status(hci::ErrorCode::Success));
+            self.send_hci_event(hci::LeBigSyncLost {
+                big_handle,
+                reason: hci::ErrorCode::ConnectionTimeout,
+            });
+            return;
+        };
+
+        // Validate the Encryption parameter against the BIG configuration.
+        if big_info.encryption && encryption == 0 {
+            println!("LE BIG Create Sync: BIG is encrypted but no broadcast code provided");
+            return self.send_hci_event(command_status(hci::ErrorCode::CommandDisallowed));
+        }
+        if !big_info.encryption && encryption != 0 {
+            println!("LE BIG Create Sync: BIG is not encrypted but encryption requested");
+            return self
+                .send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        // Persist the sync configuration.
+        self.big_sync_config.insert(
+            big_handle,
+            BigSyncConfig {
+                big_handle,
+                sync_handle,
+                encryption: encryption != 0,
+                broadcast_code: *broadcast_code,
+                mse,
+                big_sync_timeout,
+                bis: bis_indices.clone(),
+                advertiser_address,
+                advertising_sid,
+            },
+        );
+
+        // Allocate peripheral BIS connection handles, one per requested BIS.
+        let mut bis_connection_handles: Vec<u16> = Vec::new();
+        for bis_id in &bis_indices {
+            let handle = self.new_bis_connection_handle();
+            self.bis_connections.insert(
+                handle,
+                Bis {
+                    bis_connection_handle: handle,
+                    big_handle,
+                    bis_id: *bis_id,
+                    advertising_handle: 0,
+                    role: hci::Role::Peripheral,
+                    max_sdu: big_info.max_sdu,
+                    iso_data_path: None,
+                },
+            );
+            bis_connection_handles.push(handle);
+        }
+
+        // Send command status, then the LE BIG Sync Established event.
+        self.send_hci_event(command_status(hci::ErrorCode::Success));
+        self.send_hci_event(hci::LeBigSyncEstablished {
+            status: hci::ErrorCode::Success,
+            big_handle,
+            transport_latency_big: big_info.sdu_interval * 2,
+            nse: big_info.nse,
+            bn: big_info.bn,
+            pto: big_info.pto,
+            irc: big_info.irc,
+            max_pdu: big_info.max_pdu,
+            iso_interval: big_info.iso_interval,
+            connection_handle: bis_connection_handles,
+        });
+    }
+
+    /// Handle HCI LE BIG Terminate Sync command (Vol 4, Part E § 7.8.107).
+    pub fn hci_le_big_terminate_sync(&mut self, packet: hci::LeBigTerminateSync) {
+        let big_handle = packet.big_handle();
+        let command_complete = |status| hci::LeBigTerminateSyncComplete {
+            status,
+            big_handle,
+            num_hci_command_packets: 1,
+        };
+
+        // Validate BIG_Handle range.
+        if big_handle > 0xEF {
+            println!("LE BIG Terminate Sync: Invalid BIG_Handle 0x{:02X}", big_handle);
+            return self
+                .send_hci_event(command_complete(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        // Validate the BIG_Handle identifies an active sync.
+        if self.big_sync_config.remove(&big_handle).is_none() {
+            println!("LE BIG Terminate Sync: Unknown BIG_Handle 0x{:02X}", big_handle);
+            return self.send_hci_event(command_complete(
+                hci::ErrorCode::UnknownAdvertisingIdentifier,
+            ));
+        }
+
+        // Remove peripheral BIS connections for this BIG.
+        self.bis_connections
+            .retain(|_, bis| bis.big_handle != big_handle || bis.role != hci::Role::Peripheral);
+
+        // Send command complete, then the LE BIG Sync Lost event.
+        self.send_hci_event(command_complete(hci::ErrorCode::Success));
+        self.send_hci_event(hci::LeBigSyncLost {
+            big_handle,
+            reason: hci::ErrorCode::Success,
+        });
     }
 }
 

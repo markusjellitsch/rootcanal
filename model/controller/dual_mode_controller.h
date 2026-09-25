@@ -506,6 +506,8 @@ public:
   void LePeriodicAdvertisingTerminateSync(CommandView command);
 
   // 7.8.70 - 7.8.73
+  void LeSetPeriodicAdvertisingReceiveEnable(CommandView command);
+
   void LeAddDeviceToPeriodicAdvertiserList(CommandView command);
   void LeRemoveDeviceFromPeriodicAdvertiserList(CommandView command);
   void LeClearPeriodicAdvertiserList(CommandView command);

@@ -118,6 +118,7 @@ static constexpr uint64_t LlFeatures() {
           LLFeaturesBits::CONNECTED_ISOCHRONOUS_STREAM_CENTRAL,
           LLFeaturesBits::CONNECTED_ISOCHRONOUS_STREAM_PERIPHERAL,
           LLFeaturesBits::ISOCHRONOUS_BROADCASTER,
+          LLFeaturesBits::SYNCHRONIZED_RECEIVER,
           LLFeaturesBits::LE_POWER_CONTROL_REQUEST,
           LLFeaturesBits::CONNECTION_SUBRATING,
           LLFeaturesBits::CHANNEL_SOUNDING,
@@ -410,7 +411,7 @@ static std::array<uint8_t, 64> SupportedCommands() {
           // OpCodeIndex::LE_CONNECTION_CTE_REQUEST_ENABLE,
           // OpCodeIndex::LE_CONNECTION_CTE_RESPONSE_ENABLE,
           // OpCodeIndex::LE_READ_ANTENNA_INFORMATION,
-          // OpCodeIndex::LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE,
+          OpCodeIndex::LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE,
           // OpCodeIndex::LE_PERIODIC_ADVERTISING_SYNC_TRANSFER,
           // OpCodeIndex::LE_PERIODIC_ADVERTISING_SET_INFO_TRANSFER,
           // OpCodeIndex::LE_SET_PERIODIC_ADVERTISING_SYNC_TRANSFER_PARAMETERS,
@@ -428,8 +429,8 @@ static std::array<uint8_t, 64> SupportedCommands() {
           OpCodeIndex::LE_CREATE_BIG,
           // OpCodeIndex::LE_CREATE_BIG_TEST,
           OpCodeIndex::LE_TERMINATE_BIG,
-          // OpCodeIndex::LE_BIG_CREATE_SYNC,
-          // OpCodeIndex::LE_BIG_TERMINATE_SYNC,
+          OpCodeIndex::LE_BIG_CREATE_SYNC,
+          OpCodeIndex::LE_BIG_TERMINATE_SYNC,
           OpCodeIndex::LE_REQUEST_PEER_SCA,
           OpCodeIndex::LE_SETUP_ISO_DATA_PATH,
           OpCodeIndex::LE_REMOVE_ISO_DATA_PATH,
@@ -1775,6 +1776,12 @@ static std::vector<OpCodeIndex> le_isochronous_broadcast_commands_ = {
         OpCodeIndex::LE_TERMINATE_BIG,
 };
 
+// Commands enabled by the Synchronized Receiver feature bit.
+static std::vector<OpCodeIndex> le_isochronous_synchronized_receiver_commands_ = {
+        OpCodeIndex::LE_BIG_CREATE_SYNC,
+        OpCodeIndex::LE_BIG_TERMINATE_SYNC,
+};
+
 // Commands enabled by the Connection Subrating feature bit.
 // Central and Peripheral support bits are enabled together.
 static std::vector<OpCodeIndex> connection_subrating_commands_ = {
@@ -1978,6 +1985,15 @@ ControllerProperties::ControllerProperties(rootcanal::configuration::Controller 
                       le_isochronous_broadcast);
       SetSupportedCommandBits(supported_commands, le_isochronous_broadcast_commands_,
                               le_isochronous_broadcast);
+    }
+    if (features.has_le_isochronous_synchronized_receiver()) {
+      bool le_isochronous_sync_receiver =
+              features.le_isochronous_synchronized_receiver();
+      SetLLFeatureBit(le_features, LLFeaturesBits::SYNCHRONIZED_RECEIVER,
+                      le_isochronous_sync_receiver);
+      SetSupportedCommandBits(supported_commands,
+                              le_isochronous_synchronized_receiver_commands_,
+                              le_isochronous_sync_receiver);
     }
     if (features.has_le_connection_subrating()) {
       SetLLFeatureBit(le_features, LLFeaturesBits::CONNECTION_SUBRATING,

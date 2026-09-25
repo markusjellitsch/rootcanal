@@ -1,63 +1,66 @@
-# Support HCI_LE_Create_BIG and HCI_LE_Terminate_BIG (LE Audio Broadcaster)
+# Support HCI_LE_Create_BIG / HCI_LE_Terminate_BIG and the Synchronized Receiver (LE Audio)
 
 ## Summary
 
-This change adds end-to-end support for the **Isochronous Broadcaster** role in
+This change adds end-to-end support for both **LE Audio** isochronous roles in
 RootCanal, so that a host stack (e.g. Google Bumble) can set up an **LE Audio
-Broadcast Transmitter**. Two HCI commands that were previously not wired up are
-now supported and dispatched to the link layer:
+Broadcast Transmitter** and a **Synchronized Receiver** that joins the broadcast.
+
+**Broadcaster** commands previously wired up but not reachable are now supported:
 
 - `HCI_LE_Create_BIG` (OCF `0x0068`, opcode `0x2068`)
 - `HCI_LE_Terminate_BIG` (OCF `0x0069`, opcode `0x2069`)
 
-When a BIG is created on a periodic advertising train, the controller now also
-announces the **BIGInfo** on that train, which is required for a real
-Auracast/LE Audio broadcaster. Creating the BIG does not change the periodic
-advertising schedule; instead the periodic advertising PDU (AUX_SYNC_IND)
-continues and carries the BIGInfo in its **ACAD** field (and the advertising
-data can carry the BASE). Receivers use that BIGInfo to find and synchronize to
-the BIG.
+**Synchronized Receiver** commands are newly implemented/removed from the disabled
+list and routed to the link layer:
 
-Only the **broadcaster** side is implemented in this diff. The complementary
-*Synchronized Receiver* role (`HCI_LE_BIG_Create_Sync` /
-`HCI_LE_BIG_Terminate_Sync` and consuming the BIGInfo to establish a BIG sync)
-is intentionally left out of scope and will be done later.
+- `HCI_LE_Set_Periodic_Advertising_Receive_Enable` (OCF `0x2059`)
+- `HCI_LE_BIG_Create_Sync` (OCF `0x206b`)
+- `HCI_LE_BIG_Terminate_Sync` (OCF `0x206c`)
+
+When a BIG is created on a periodic advertising train, the controller announces
+the **BIGInfo** on that train: the periodic advertising PDU (AUX_SYNC_IND)
+continues on its schedule and carries the BIGInfo in its **ACAD** field (the
+advertising data continues to carry the BASE). A Synchronized Receiver parses the
+BIGInfo from the received ACAD, emits an HCI `LE BIGInfo Advertising Report` to
+the Host, and can then establish a BIG sync with `HCI_LE_BIG_Create_Sync`.
 
 ## Background
 
-The Rust link layer already contained `hci_le_create_big` / `hci_le_terminate_big`
-handlers and the HCI command/event packet definitions, but they were **not
-reachable** end-to-end:
-
-- The C++ controller did not advertise `LE_CREATE_BIG` / `LE_TERMINATE_BIG` as
-  supported commands, and did not set the `Isochronous Broadcaster` LE feature
-  bit, so `DualModeController` rejected both commands with
-  `UNKNOWN_HCI_COMMAND` (`0x01`).
-- The BIGInfo was never announced on the periodic advertising train.
+- The Rust link layer already contained `hci_le_create_big` / `hci_le_terminate_big`
+  and a `BigConfig` model, but the commands were not reachable end-to-end.
+- Periodic advertising sync creation/termination already worked in the C++
+  controller, but periodic PDUs were only processed while the scanner was
+  running, so an established sync (which the controller tracks independently of
+  the scanner) lost the ability to observe the ACAD after scanning stopped.
+- The receiver commands were present in the PDL but disabled in the controller.
 
 ## What changed
 
 ### Controller properties / HCI command support
 
 - `model/controller/controller_properties.cc`
-  - Added `LLFeaturesBits::ISOCHRONOUS_BROADCASTER` to the default `LlFeatures()`.
-  - Enabled `OpCodeIndex::LE_CREATE_BIG` and `OpCodeIndex::LE_TERMINATE_BIG` in
-    the default `SupportedCommands()` mask.
-  - Added an `le_isochronous_broadcast_commands_` list and applied it from the
-    new `features.le_isochronous_broadcast` configuration toggle.
+  - Added `LLFeaturesBits::ISOCHRONOUS_BROADCASTER` **and**
+    `LLFeaturesBits::SYNCHRONIZED_RECEIVER` to the default `LlFeatures()`.
+  - Enabled `LE_CREATE_BIG`, `LE_TERMINATE_BIG`,
+    `LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE`, `LE_BIG_CREATE_SYNC`, and
+    `LE_BIG_TERMINATE_SYNC` in the default `SupportedCommands()` mask.
+  - Added `le_isochronous_broadcast_commands_` and
+    `le_isochronous_synchronized_receiver_commands_` lists, applied from the
+    new `features.le_isochronous_broadcast` / `features.le_isochronous_-
+    synchronized_receiver` configuration toggles.
 - `proto/rootcanal/configuration.proto`
-  - Added `le_isochronous_broadcast` to `ControllerFeatures` for explicit enable /
-    disable (defaults to enabled).
+  - Added `le_isochronous_broadcast` and `le_isochronous_synchronized_receiver`
+    to `ControllerFeatures` (defaults to enabled).
 
 ### HCI event layout fix for Bumble interoperability
 
 - `packets/hci_packets.pdl`
-  - Changed `HCI_LE_Create_BIG_Complete`'s connection-handle prefix from
-    `_size_(connection_handle)` (byte length, i.e. `num_bis * 2`) to
-    `_count_(connection_handle)` (item count, i.e. `num_bis`). The Core spec only
-    defines `Num_BIS` (a count), and Bumble expects that count, so this makes the
-    `LE Create BIG Complete` event (and hence BIS handles) parse correctly in
-    Google Bumble.
+  - Changed `HCI_LE_Create_BIG_Complete`'s and `HCI_LE_BIG_Sync_Established`'s
+    connection-handle prefix from `_size_(connection_handle)` (byte length) to
+    `_count_(connection_handle)` (item count). The Core spec defines `Num_BIS` /
+    the BIS handles as a count, and Bumble expects that count, so the events now
+    parse correctly in Google Bumble.
 
 ### BIGInfo on the periodic advertising train (ACAD field)
 
@@ -86,27 +89,87 @@ reachable** end-to-end:
     invoked while building each periodic advertising PDU, so that the ACAD field
     carries the BIGInfo of any BIG associated with the train.
 
+### Synchronized Receiver (receiver HCI commands / BIGInfo consumption)
+
+- `model/controller/dual_mode_controller.cc` / `.h`
+  - Wired `LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE` to a dedicated handler and
+    routed `LE_BIG_CREATE_SYNC` / `LE_BIG_TERMINATE_SYNC` via `ForwardToLl`
+    (un-commenting the disabled entries).
+- `model/controller/le_controller.cc` / `.h`
+  - Added `LeController::LeSetPeriodicAdvertisingReceiveEnable`, which enables /
+    disables the delivery of periodic advertising reports for a given sync
+    (a new `receive_enabled` field on the `Synchronized` state) while keeping
+    the sync itself synchronized.
+  - Relaxed the periodic-PDU input gating so that an **established** periodic
+    advertising sync continues to track the train and to observe the ACAD even
+    after the scanner is stopped (matching real hardware behaviour).
+  - Added `ParseBigInfoFromAcad`, which scans the received periodic advertising
+    PDU's ACAD field for the BIGInfo AD type (`0x2C`), emits the HCI `LE BIGInfo
+    Advertising Report` event to the Host, and stores the BIG info in the link
+    layer keyed by (advertiser address, SID).
+  - Added a `get_sync_info` controller callback exposing the advertiser address /
+    SID of an established periodic sync to the link layer.
+- `rust/src/llcp/iso.rs`
+  - Added a `BigSyncConfig` type and a `known_big_info` map (BIGInfo received
+    from a broadcaster), plus `hci_le_big_create_sync()` (validates the
+    parameters, looks up the BIGInfo for the sync, allocates peripheral BIS
+    handles, returns `LE Big Sync Established`) and `hci_le_big_terminate_sync()`
+    (returns `LE BIG Terminate Sync Complete` + `LE Big Sync Lost`).
+- `rust/src/llcp/manager.rs`
+  - Routed `LeBigCreateSync` / `LeBigTerminateSync` to the ISO manager and
+    exposed `store_big_info` to the FFI.
+- `rust/src/ffi.rs` and `rust/include/rootcanal_rs.h`
+  - Added the `get_sync_info` callback to `ControllerOps` and the
+    `link_layer_le_big_info_received` C ABI used by the controller to record the
+    BIGInfo received from a broadcaster.
+
+### BIS data broadcast over the virtual air (BIS SDUs)
+
+- `packets/link_layer_packets.pdl`
+  - Filled in `LeBroadcastIsochronousPdu` (big_handle, bis_id, sequence_number,
+    data) so a broadcaster can relay BIS SDUs to listening receivers.
+- `model/controller/le_controller.cc` / `.h`
+  - Extended `HandleIso` to recognize BIS connection handles (via
+    `link_layer_get_bis_information`) and broadcast the SDU as a
+    `LeBroadcastIsochronousPdu` from the train's advertising address.
+  - Routed `LE_BROADCAST_ISOCHRONOUS_PDU` as a connection-less packet and added
+    `IncomingLeBroadcastIsochronousPdu`, which delivers the received BIS SDU to
+    the Host (via `SendIsoToHost`) only if the BIS is part of an established BIG
+    sync with that broadcaster.
+- `rust/src/llcp/iso.rs`, `rust/src/llcp/manager.rs`, `rust/src/ffi.rs`,
+  `rust/include/rootcanal_rs.h`
+  - Added `get_bis_information` and `get_bis_sync_connection_handle` (and their
+    FFI exports) to look up a broadcaster's BIS and to resolve a receiver's
+    synchronized BIS connection handle.
+
 ## Testing
 
-A Google Bumble integration test was added and validated end-to-end against a
+Two Google Bumble integration tests were added and validated end-to-end against a
 running RootCanal instance over a TCP HCI transport:
 
 - `examples/python/broadcast_transmitter.py` (with `examples/python/pyproject.toml`)
-  - Connects to RootCanal via `tcp-client:127.0.0.1:6402`.
-  - Verifies the `Isochronous Broadcaster` feature and both commands are
-    advertised.
-  - Sets up a periodic advertising train, creates a BIG with 2 BIS, configures the
-    ISO data path on one BIS, and terminates the BIG.
+  - Connects via `tcp-client:127.0.0.1:6402`.
+  - Verifies the `Isochronous Broadcaster` feature and `Create/`Terminate BIG`
+    support, sets up a periodic advertising train, creates a BIG with 2 BIS,
+    configures the ISO data path on one BIS, and terminates the BIG.
+- `examples/python/broadcast_receiver.py`
+  - A two-device test (broadcaster + receiver on the same RootCanal instance).
+  - Verifies the full receiver command flow: periodic advertising sync, `Set
+    Periodic Advertising Receive Enable`, the `LE BIGInfo Advertising Report`
+    (parsed from the ACAD), `LE BIG Create Sync` -> `LE BIG Sync Established`,
+    and that an ISO SDU written by the broadcaster on a BIS is delivered to the
+    receiver's Host over the virtual air (BIS broadcast).
 
-Run it with:
+Run them with:
 
 ```sh
 bazel run //:rootcanal   # in one terminal (HCI on 6402)
 
 cd examples/python && uv run --with bumble python broadcast_transmitter.py
+cd examples/python && uv run --with bumble python broadcast_receiver.py
 ```
 
-Observed output:
+Observed output (broadcaster test):
 
 ```
 Isochronous Broadcaster LE feature: True
@@ -121,17 +184,32 @@ ISO data path configured on BIS 3328 (host -> controller)
 BIG terminated.
 ```
 
-During testing the RootCanal controller was observed embedding the BIGInfo
-AD structure into the periodic advertising PDU's ACAD field on every periodic
-advertising event once the BIG existed (confirmed via a debug trace added
-temporarily while developing).
+Observed output (receiver test):
+
+```
+Broadcaster: BIG created, BIS: [3328, 3329]
+PASS: periodic sync established (step 1) sync_handle=0x0000
+PASS: Set Periodic Advertising Receive Enable status 0x00 (step 2)
+PASS: BIGInfo report (step 3) num_bis=2 nse=5 iso_interval=10.0
+PASS: BIG sync established (step 4): [3328, 3329]
+Broadcaster: sending ISO SDU on BIS 3328
+PASS: receiver got ISO SDU over the air
+PASS: BIG sync terminated (step 4)
+```
+
+Supporting checks observed while developing:
+- The broadcaster embeds the BIGInfo AD structure into the periodic advertising
+  PDU's ACAD field on every periodic advertising event while a BIG exists.
+- A separate check confirmed that `Set Periodic Advertising Receive Enable`
+  (enable=0) suppresses periodic advertising **data** reports (`delta=0`) while
+  the LE BIGInfo Advertising Report (from the ACAD) is still delivered, and
+  reports resume when re-enabled.
 
 ## Notes / future work
 
-- The *Synchronized Receiver* role is not implemented here and will be done
-  later: `HCI_LE_BIG_Create_Sync` / `HCI_LE_BIG_Terminate_Sync`, parsing the
-  BIGInfo carried in the received periodic advertising ACAD, and generating the
-  corresponding HCI LE BIGInfo Advertising Report event.
-- Broadcasting BIS SDUs out on the air interface is not part of this change;
-  the host can already configure the ISO data path for a BIS, which is the
-  prerequisite for a functional transmitter.
+- All the command flow described in the Summary is implemented and the virtual
+  **air-interface BIS broadcast** works: when the broadcaster sends an ISO SDU on
+  a BIS (`HCI_LE_Setup_ISO_Data_Path` + HCI ISO data), the `BIS` SDU is
+  broadcast on the virtual air and the synchronized receiver delivers it to its
+  Host over HCI ISO.
+- `HCI_LE_BIG_Create_Sync_Test` is not implemented (future work).

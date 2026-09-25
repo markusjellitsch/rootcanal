@@ -102,6 +102,10 @@ packet LeConnectedIsochronousPdu : LinkLayerPacket (type = LE_CONNECTED_ISOCHRON
 }
 
 packet LeBroadcastIsochronousPdu : LinkLayerPacket (type = LE_BROADCAST_ISOCHRONOUS_PDU) {
+  big_handle: 8,
+  bis_id: 8,
+  sequence_number: 16,
+  data: 8[],
 }
 
 packet Disconnect : LinkLayerPacket (type = DISCONNECT) {

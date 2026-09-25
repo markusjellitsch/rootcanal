@@ -1215,6 +1215,24 @@ ErrorCode LeController::LePeriodicAdvertisingTerminateSync(uint16_t sync_handle)
   return ErrorCode::SUCCESS;
 }
 
+// HCI LE Set Periodic Advertising Receive Enable command (Vol 4, Part E
+// § 7.8.70). Enables or disables the reporting of periodic advertising data
+// for an established periodic advertising sync, while keeping the sync.
+ErrorCode LeController::LeSetPeriodicAdvertisingReceiveEnable(uint16_t sync_handle,
+                                                              uint8_t enable) {
+  // If the Sync_Handle parameter does not identify a periodic advertising
+  // train, the Controller shall return the error code Unknown Advertising
+  // Identifier (0x42).
+  auto it = synchronized_.find(sync_handle);
+  if (it == synchronized_.end()) {
+    INFO(id_, "the Sync_Handle 0x{:x} does not exist", sync_handle);
+    return ErrorCode::UNKNOWN_ADVERTISING_IDENTIFIER;
+  }
+
+  it->second.receive_enabled = enable != 0;
+  return ErrorCode::SUCCESS;
+}
+
 // =============================================================================
 //  LE Legacy Scanning
 // =============================================================================
@@ -4057,6 +4075,21 @@ LeController::LeController(const Address& address, const ControllerProperties& p
 
                     *periodic_enabled = it->second.IsPeriodicEnabled();
                     return true;
+                  },
+
+          .get_sync_info =
+                  [](void* user, uint16_t sync_handle, uint8_t (*address)[6], uint8_t* sid) {
+                    auto controller = static_cast<LeController*>(user);
+                    auto it = controller->synchronized_.find(sync_handle);
+                    if (it == controller->synchronized_.end()) {
+                      return false;
+                    }
+
+                    std::copy(it->second.advertiser_address.data(),
+                              it->second.advertiser_address.data() + 6,
+                              reinterpret_cast<uint8_t*>(address));
+                    *sid = it->second.advertising_sid;
+                    return true;
                   }};
 
   ll_.reset(link_layer_create(controller_ops_));
@@ -4108,6 +4141,10 @@ void LeController::IncomingPacket(model::packets::LinkLayerPacketView incoming, 
       return IncomingLeExtendedAdvertisingPdu(incoming, rssi);
     case model::packets::PacketType::LE_PERIODIC_ADVERTISING_PDU:
       return IncomingLePeriodicAdvertisingPdu(incoming, rssi);
+    case model::packets::PacketType::LE_BROADCAST_ISOCHRONOUS_PDU:
+      // Connection-less BIG broadcast: a receiver decides whether to deliver
+      // the BIS SDU based on its BIG sync state.
+      return IncomingLeBroadcastIsochronousPdu(incoming);
     case model::packets::PacketType::LE_CONNECT:
       return IncomingLeConnectPacket(incoming);
     case model::packets::PacketType::LE_CONNECT_COMPLETE:
@@ -5202,13 +5239,13 @@ void LeController::IncomingLePeriodicAdvertisingPdu(model::packets::LinkLayerPac
   auto pdu = model::packets::LePeriodicAdvertisingPduView::Create(incoming);
   ASSERT(pdu.IsValid());
 
-  // Synchronization with periodic advertising only occurs while extended
-  // scanning is enabled.
-  if (!scanner_.IsEnabled()) {
-    return;
-  }
-  if (!ExtendedAdvertising()) {
-    DEBUG(id_, "Extended advertising ignored because the scanner is legacy");
+  // Periodic advertising synchronization requires extended scanning while a
+  // sync is being established. However, once a periodic advertising sync has
+  // been established, the controller continues to track the periodic
+  // advertising train independently of the scanner, so periodic PDUs are still
+  // processed to refresh the sync (and to carry the ACAD / BIGInfo).
+  bool has_sync = synchronizing_.has_value() || !synchronized_.empty();
+  if (!has_sync && (!scanner_.IsEnabled() || !ExtendedAdvertising())) {
     return;
   }
 
@@ -5287,6 +5324,7 @@ void LeController::IncomingLePeriodicAdvertisingPdu(model::packets::LinkLayerPac
                      .sync_handle = sync_handle,
                      .sync_timeout = synchronizing_->sync_timeout,
                      .timeout = std::chrono::steady_clock::now() + synchronizing_->sync_timeout,
+                     .receive_enabled = true,
              }});
 
     // Quit synchronizing state.
@@ -5311,7 +5349,11 @@ void LeController::IncomingLePeriodicAdvertisingPdu(model::packets::LinkLayerPac
     // and refresh the timeout for sync termination. The periodic
     // advertising event might need to be fragmented to fit the maximum
     // size of an HCI event.
-    if (IsLeEventUnmasked(SubeventCode::LE_PERIODIC_ADVERTISING_REPORT_V1)) {
+    // Reports are only delivered if the Host has enabled periodic
+    // advertising receive for this sync (HCI_LE_Set_Periodic_Advertising_-
+    // Receive_Enable).
+    if (sync.receive_enabled &&
+        IsLeEventUnmasked(SubeventCode::LE_PERIODIC_ADVERTISING_REPORT_V1)) {
       // Each extended advertising report can only pass 229 bytes of
       // advertising data (255 - 8 = size of report fields).
       std::vector<uint8_t> advertising_data = pdu.GetAdvertisingData();
@@ -5332,6 +5374,13 @@ void LeController::IncomingLePeriodicAdvertisingPdu(model::packets::LinkLayerPac
                 bluetooth::hci::CteType::NO_CONSTANT_TONE_EXTENSION, data_status, fragment_data));
       } while (offset < advertising_data.size());
     }
+
+    // The periodic advertising PDU may carry an ACAD field (cf Vol 6, Part B
+    // § 2.3.2.3.2). If it contains the BIGInfo AD type, let the Host know that
+    // the broadcaster is advertising a BIG (which it can later synchronize to)
+    // via an HCI LE BIGInfo Advertising Report event.
+    ParseBigInfoFromAcad(pdu, sync.sync_handle, sync.advertising_sid,
+                         resolved_advertiser_address, rssi);
 
     // Refresh the timeout for the sync disconnection.
     sync.timeout = std::chrono::steady_clock::now() + sync.sync_timeout;
@@ -5355,6 +5404,74 @@ void LeController::IncomingLlcpPacket(model::packets::LinkLayerPacketView incomi
   ASSERT(link_layer_ingest_llcp(ll_.get(), *acl_connection_handle, packet.data(), packet.size()));
 }
 
+void LeController::ParseBigInfoFromAcad(
+        model::packets::LePeriodicAdvertisingPduView const& pdu, uint16_t sync_handle,
+        uint8_t advertising_sid, AddressWithType const& resolved_advertiser_address, uint8_t rssi) {
+  auto acad = pdu.GetAcad();
+
+  // Scan the ACAD AD structures for the BIGInfo AD type (0x2C). The ACAD
+  // uses the same AD structure framing as advertising data:
+  // [Length][AD Type][AD Data...].
+  size_t acad_offset = 0;
+  while (acad_offset + 2 <= acad.size()) {
+    size_t ad_length = acad[acad_offset];
+    if (ad_length == 0 || acad_offset + 1 + ad_length > acad.size()) {
+      break;  // Malformed AD structure; stop scanning.
+    }
+    const uint8_t ad_type = acad[acad_offset + 1];
+    // BIGInfo AD Type (cf Core Spec Vol 6, Part B § 1.3.1): 17 bytes.
+    if (ad_type == 0x2C && ad_length >= 17) {
+      const uint8_t* big = &acad[acad_offset + 2];
+      uint16_t iso_interval =
+              static_cast<uint16_t>(big[2]) | (static_cast<uint16_t>(big[3]) << 8);
+      uint16_t max_pdu = static_cast<uint16_t>(big[7]) | (static_cast<uint16_t>(big[8]) << 8);
+      uint32_t sdu_interval = big[9] | (static_cast<uint32_t>(big[10]) << 8) |
+                              (static_cast<uint32_t>(big[11]) << 16);
+      uint16_t max_sdu = static_cast<uint16_t>(big[12]) |
+                         (static_cast<uint16_t>(big[13]) << 8);
+
+      // Store the BIG info in the link layer (keyed by the advertiser address
+      // and SID) so that HCI LE BIG Create Sync can complete with the actual
+      // BIG parameters.
+      BigInfoFfi info{};
+      info.num_bis = big[0];
+      info.nse = big[1];
+      info.iso_interval = iso_interval;
+      info.bn = big[4];
+      info.pto = big[5];
+      info.irc = big[6];
+      info.max_pdu = max_pdu;
+      info.sdu_interval = sdu_interval;
+      info.max_sdu = max_sdu;
+      info.phy = big[14];
+      info.framing = big[15];
+      info.encryption = big[16];
+
+      Address advertiser_address = resolved_advertiser_address.GetAddress();
+      uint8_t advertiser_address_bytes[6];
+      std::copy(advertiser_address.data(), advertiser_address.data() + 6,
+                advertiser_address_bytes);
+      link_layer_le_big_info_received(ll_.get(), &advertiser_address_bytes,
+                                      advertising_sid, &info);
+
+      // Report the BIGInfo to the Host, if the subevent is unmasked.
+      if (IsLeEventUnmasked(SubeventCode::LE_BIG_INFO_ADVERTISING_REPORT)) {
+        send_event_(bluetooth::hci::LeBigInfoAdvertisingReportBuilder::Create(
+                sync_handle, big[0],                   // Num_BIS
+                big[1],                                 // NSE
+                iso_interval, big[4],                   // BN
+                big[5],                                 // PTO
+                big[6],                                 // IRC
+                max_pdu, sdu_interval, max_sdu,
+                static_cast<bluetooth::hci::SecondaryPhyType>(big[14]),
+                static_cast<bluetooth::hci::Enable>(big[15]),
+                static_cast<bluetooth::hci::Enable>(big[16])));
+      }
+    }
+    acad_offset += 1 + ad_length;
+  }
+}
+
 void LeController::IncomingLeConnectedIsochronousPdu(LinkLayerPacketView incoming) {
   auto pdu = model::packets::LeConnectedIsochronousPduView::Create(incoming);
   ASSERT(pdu.IsValid());
@@ -5370,21 +5487,49 @@ void LeController::IncomingLeConnectedIsochronousPdu(LinkLayerPacketView incomin
     return;
   }
 
+  SendIsoToHost(cis_connection_handle, pdu.GetSequenceNumber(), std::move(packet));
+}
+
+void LeController::IncomingLeBroadcastIsochronousPdu(LinkLayerPacketView incoming) {
+  auto pdu = model::packets::LeBroadcastIsochronousPduView::Create(incoming);
+  ASSERT(pdu.IsValid());
+  auto data = pdu.GetData();
+  auto packet = std::vector(data.begin(), data.end());
+
+  // Only deliver the BIS SDU to the Host if this receiver has established a
+  // BIG sync with the broadcaster for that BIS.
+  uint8_t bis_id = pdu.GetBisId();
+  uint16_t bis_connection_handle = 0;
+  Address source_address = incoming.GetSourceAddress();
+  uint8_t advertiser_address_bytes[6];
+  std::copy(source_address.data(), source_address.data() + 6, advertiser_address_bytes);
+  if (!link_layer_get_bis_sync_connection_handle(ll_.get(), &advertiser_address_bytes, bis_id,
+                                                 &bis_connection_handle)) {
+    INFO(id_, "Dropping BIG ISO PDU received on unsynchronized BIS bis_id={}", bis_id);
+    return;
+  }
+
+  SendIsoToHost(bis_connection_handle, pdu.GetSequenceNumber(), std::move(packet));
+}
+
+void LeController::SendIsoToHost(uint16_t connection_handle, uint16_t sequence_number,
+                                 std::vector<uint8_t> sdu) {
   // Fragment the ISO SDU if larger than the maximum payload size (4095).
   constexpr size_t kMaxPayloadSize = 4095 - 4;  // remove sequence_number and
                                                 // iso_sdu_length
-  size_t remaining_size = packet.size();
+  size_t remaining_size = sdu.size();
   size_t offset = 0;
+  size_t iso_sdu_length = sdu.size();
   auto packet_boundary_flag = remaining_size <= kMaxPayloadSize
                                       ? bluetooth::hci::IsoPacketBoundaryFlag::COMPLETE_SDU
                                       : bluetooth::hci::IsoPacketBoundaryFlag::FIRST_FRAGMENT;
 
   do {
     size_t fragment_size = std::min(kMaxPayloadSize, remaining_size);
-    std::vector<uint8_t> fragment(packet.data() + offset, packet.data() + offset + fragment_size);
+    std::vector<uint8_t> fragment(sdu.data() + offset, sdu.data() + offset + fragment_size);
 
     send_iso_(bluetooth::hci::IsoWithoutTimestampBuilder::Create(
-            cis_connection_handle, packet_boundary_flag, pdu.GetSequenceNumber(), iso_sdu_length,
+            connection_handle, packet_boundary_flag, sequence_number, iso_sdu_length,
             bluetooth::hci::IsoPacketStatusFlag::VALID, std::move(fragment)));
 
     remaining_size -= fragment_size;
@@ -5501,13 +5646,25 @@ void LeController::HandleIso(bluetooth::hci::IsoView iso) {
   uint16_t packet_sequence_number = 0;
   uint16_t max_sdu_length = 0;
 
-  if (!link_layer_get_cis_information(ll_.get(), cis_connection_handle, &acl_connection_handle,
-                                      &cig_id, &cis_id, &max_sdu_length)) {
-    INFO(id_, "Ignoring CIS pdu received on disconnected CIS handle={}", cis_connection_handle);
+  // Determine whether the handle refers to a CIS or a BIS.
+  bool is_cis = link_layer_get_cis_information(ll_.get(), cis_connection_handle,
+                                               &acl_connection_handle, &cig_id, &cis_id,
+                                               &max_sdu_length);
+
+  uint8_t big_handle = 0;
+  uint8_t bis_id = 0;
+  uint8_t advertising_handle = 0;
+  uint8_t bis_role = 0;
+  bool is_bis = !is_cis && link_layer_get_bis_information(
+                                   ll_.get(), cis_connection_handle, &big_handle, &bis_id,
+                                   &advertising_handle, &max_sdu_length, &bis_role);
+
+  if (!is_cis && !is_bis) {
+    INFO(id_, "Ignoring ISO pdu received on disconnected handle={}", cis_connection_handle);
     return;
   }
 
-  if (!connections_.HasLeAclHandle(acl_connection_handle)) {
+  if (is_cis && !connections_.HasLeAclHandle(acl_connection_handle)) {
     ERROR(id_, "Invalid LE-ACL connection handle returned from ISO manager");
     return;
   }
@@ -5540,19 +5697,36 @@ void LeController::HandleIso(bluetooth::hci::IsoView iso) {
   if (pb_flag == bluetooth::hci::IsoPacketBoundaryFlag::LAST_FRAGMENT ||
       pb_flag == bluetooth::hci::IsoPacketBoundaryFlag::COMPLETE_SDU) {
     // Validate that the Host stack is not sending ISO SDUs that are larger
-    // that what was configured for the CIS.
+    // than what was configured for the CIS or BIS.
     if (iso_sdu_.size() > max_sdu_length) {
       WARNING(id_,
               "attempted to send an SDU of length {} that exceeds the configure "
               "Max_SDU_Length ({})",
               iso_sdu_.size(), max_sdu_length);
+      iso_sdu_.clear();
       return;
     }
 
-    auto const& connection = connections_.GetLeAclConnection(acl_connection_handle);
-    SendLeLinkLayerPacket(model::packets::LeConnectedIsochronousPduBuilder::Create(
-            connection.own_address.GetAddress(), connection.address.GetAddress(), cig_id, cis_id,
-            packet_sequence_number, std::move(iso_sdu_)));
+    if (is_cis) {
+      auto const& connection = connections_.GetLeAclConnection(acl_connection_handle);
+      SendLeLinkLayerPacket(model::packets::LeConnectedIsochronousPduBuilder::Create(
+              connection.own_address.GetAddress(), connection.address.GetAddress(), cig_id, cis_id,
+              packet_sequence_number, std::move(iso_sdu_)));
+    } else {
+      // Broadcast the BIS SDU to all listening controllers. The source address
+      // matches the advertising address of the periodic advertising train, so
+      // that receivers can correlate the BIS with their sync.
+      auto it = extended_advertisers_.find(advertising_handle);
+      if (it == extended_advertisers_.end()) {
+        INFO(id_, "Dropping BIG ISO PDU for unknown advertising handle {}", advertising_handle);
+        iso_sdu_.clear();
+        return;
+      }
+      AddressWithType advertising_address = it->second.advertising_address;
+      SendLeLinkLayerPacket(model::packets::LeBroadcastIsochronousPduBuilder::Create(
+              advertising_address.GetAddress(), Address(), big_handle, bis_id,
+              packet_sequence_number, std::move(iso_sdu_)));
+    }
   }
 }
 

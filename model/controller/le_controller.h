@@ -459,6 +459,18 @@ public:
   // § 7.8.69).
   ErrorCode LePeriodicAdvertisingTerminateSync(uint16_t sync_handle);
 
+  // HCI LE Set Periodic Advertising Receive Enable command (Vol 4, Part E
+  // § 7.8.70).
+  ErrorCode LeSetPeriodicAdvertisingReceiveEnable(uint16_t sync_handle, uint8_t enable);
+
+  // Parse the ACAD field of a received periodic advertising PDU and, if it
+  // contains the BIGInfo AD type, generate an HCI LE BIGInfo Advertising
+  // Report event for the matching sync and store the BIG info in the link
+  // layer so that HCI LE BIG Create Sync can complete.
+  void ParseBigInfoFromAcad(model::packets::LePeriodicAdvertisingPduView const& pdu,
+                            uint16_t sync_handle, uint8_t advertising_sid,
+                            AddressWithType const& resolved_advertiser_address, uint8_t rssi);
+
   // Periodic Advertiser List
 
   // HCI LE Add Device To Periodic Advertiser List command (Vol 4, Part E
@@ -588,6 +600,13 @@ protected:
                                   model::packets::LinkLayerPacketView incoming);
   void IncomingLlcpPacket(model::packets::LinkLayerPacketView incoming);
   void IncomingLeConnectedIsochronousPdu(model::packets::LinkLayerPacketView incoming);
+  // Deliver the BIS SDU carried by a received LE Broadcast Isochronous PDU
+  // (from a broadcaster) to the Host as HCI ISO data, if the BIS is part of an
+  // established BIG sync.
+  void IncomingLeBroadcastIsochronousPdu(model::packets::LinkLayerPacketView incoming);
+  // Send an ISO SDU to the Host in one or more HCI ISO packets.
+  void SendIsoToHost(uint16_t connection_handle, uint16_t sequence_number,
+                     std::vector<uint8_t> sdu);
   // Fills `acad` with the BIGInfo AD payload announced on the periodic
   // advertising train (AUX_SYNC_IND ACAD field) for the given advertising
   // handle, if a BIG is associated with it.
@@ -949,6 +968,9 @@ private:
     uint16_t sync_handle;
     std::chrono::steady_clock::duration sync_timeout;
     std::chrono::steady_clock::time_point timeout;
+    // Whether periodic advertising reports for this sync are delivered to the
+    // Host (HCI_LE_Set_Periodic_Advertising_Receive_Enable).
+    bool receive_enabled;
   };
 
   // Periodic advertising synchronizing and synchronized states.

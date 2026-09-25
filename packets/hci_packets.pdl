@@ -6246,7 +6246,7 @@ packet LeBigSyncEstablished : LeMetaEvent (subevent_code = LE_BIG_SYNC_ESTABLISH
   irc : 8,
   max_pdu : 16,
   iso_interval : 16,
-  _size_(connection_handle) : 8,
+  _count_(connection_handle) : 8,
   connection_handle : 16[],
 }
 

@@ -2537,6 +2537,20 @@ void DualModeController::LePeriodicAdvertisingTerminateSync(CommandView command)
           kNumCommandPackets, status));
 }
 
+void DualModeController::LeSetPeriodicAdvertisingReceiveEnable(CommandView command) {
+  auto command_view = bluetooth::hci::LeSetPeriodicAdvertisingReceiveEnableView::Create(command);
+  CHECK_PACKET_VIEW(command_view);
+
+  DEBUG(id_, "<< LE Set Periodic Advertising Receive Enable");
+  DEBUG(id_, "   sync_handle=0x{:x}", command_view.GetSyncHandle());
+  DEBUG(id_, "   enable={}", static_cast<bool>(command_view.GetEnable()));
+
+  ErrorCode status = le_controller_.LeSetPeriodicAdvertisingReceiveEnable(
+          command_view.GetSyncHandle(), command_view.GetEnable());
+  send_event_(bluetooth::hci::LeSetPeriodicAdvertisingReceiveEnableCompleteBuilder::Create(
+          kNumCommandPackets, status));
+}
+
 void DualModeController::LeAddDeviceToPeriodicAdvertiserList(CommandView command) {
   auto command_view = bluetooth::hci::LeAddDeviceToPeriodicAdvertiserListView::Create(command);
   CHECK_PACKET_VIEW(command_view);
@@ -4424,8 +4438,8 @@ DualModeController::GetHciCommandHandlers() {
           //&DualModeController::LeConnectionCteResponseEnable},
           //{OpCode::LE_READ_ANTENNA_INFORMATION,
           //&DualModeController::LeReadAntennaInformation},
-          //{OpCode::LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE,
-          //&DualModeController::LeSetPeriodicAdvertisingReceiveEnable},
+          {OpCode::LE_SET_PERIODIC_ADVERTISING_RECEIVE_ENABLE,
+           &DualModeController::LeSetPeriodicAdvertisingReceiveEnable},
           //{OpCode::LE_PERIODIC_ADVERTISING_SYNC_TRANSFER,
           //&DualModeController::LePeriodicAdvertisingSyncTransfer},
           //{OpCode::LE_PERIODIC_ADVERTISING_SET_INFO_TRANSFER,
@@ -4449,8 +4463,8 @@ DualModeController::GetHciCommandHandlers() {
           {OpCode::LE_CREATE_BIG, &DualModeController::ForwardToLl},
           //{OpCode::LE_CREATE_BIG_TEST, &DualModeController::ForwardToLl},
           {OpCode::LE_TERMINATE_BIG, &DualModeController::ForwardToLl},
-          //{OpCode::LE_BIG_CREATE_SYNC, &DualModeController::ForwardToLl},
-          //{OpCode::LE_BIG_TERMINATE_SYNC, &DualModeController::ForwardToLl},
+          {OpCode::LE_BIG_CREATE_SYNC, &DualModeController::ForwardToLl},
+          {OpCode::LE_BIG_TERMINATE_SYNC, &DualModeController::ForwardToLl},
           {OpCode::LE_REQUEST_PEER_SCA, &DualModeController::LeRequestPeerSca},
           {OpCode::LE_SETUP_ISO_DATA_PATH, &DualModeController::ForwardToLl},
           {OpCode::LE_REMOVE_ISO_DATA_PATH, &DualModeController::ForwardToLl},

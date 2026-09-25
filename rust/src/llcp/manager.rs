@@ -98,6 +98,8 @@ impl LinkLayer {
             Ok(LeRemoveIsoDataPath(packet)) => self.iso.hci_le_remove_iso_data_path(packet),
             Ok(LeCreateBig(packet)) => self.iso.hci_le_create_big(packet),
             Ok(LeTerminateBig(packet)) => self.iso.hci_le_terminate_big(packet),
+            Ok(LeBigCreateSync(packet)) => self.iso.hci_le_big_create_sync(packet),
+            Ok(LeBigTerminateSync(packet)) => self.iso.hci_le_big_terminate_sync(packet),
             _ => {
                 println!("Unhandled LL HCI command {:?}", packet.op_code);
                 Err(LinkLayerError::UnhandledHciPacket)?
@@ -143,5 +145,29 @@ impl LinkLayer {
     /// advertising handle, if any (broadcaster side).
     pub fn get_big_info(&self, advertising_handle: u8) -> Option<iso::BigInfo> {
         self.iso.get_big_info(advertising_handle)
+    }
+
+    /// Store the BIG information announced by a broadcaster on the periodic
+    /// advertising train, keyed by the advertiser address and SID (receiver
+    /// side).
+    pub fn store_big_info(&mut self, advertiser_address: hci::Address, advertising_sid: u8,
+                          big_info: iso::BigInfo) {
+        self.iso.store_big_info(advertiser_address, advertising_sid, big_info);
+    }
+
+    /// Return the (big_handle, bis_id, advertising_handle, max_sdu, role) for a
+    /// BIS connection handle, if it exists.
+    pub fn get_bis_information(
+        &self,
+        bis_connection_handle: u16,
+    ) -> Option<(u8, u8, u8, u16, hci::Role)> {
+        self.iso.get_bis_information(bis_connection_handle)
+    }
+
+    /// Return the connection handle of a BIS that is part of an active BIG
+    /// sync with the given advertiser, if any (receiver side).
+    pub fn get_bis_sync_connection_handle(&self, advertiser_address: hci::Address,
+                                          bis_id: u8) -> Option<u16> {
+        self.iso.get_bis_sync_connection_handle(advertiser_address, bis_id)
     }
 }

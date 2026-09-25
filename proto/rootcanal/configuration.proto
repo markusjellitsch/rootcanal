@@ -42,6 +42,8 @@ message ControllerFeatures {
   optional bool le_power_control_request = 9;
   // Enable the support for the LL Isochronous Broadcaster role.
   optional bool le_isochronous_broadcast = 10;
+  // Enable the support for the LL Synchronized Receiver role.
+  optional bool le_isochronous_synchronized_receiver = 11;
 }
 
 message ControllerQuirks {

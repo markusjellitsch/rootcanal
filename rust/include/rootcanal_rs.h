@@ -52,6 +52,7 @@ struct ControllerOps {
   void (*send_lmp_packet)(void* user, const uint8_t (*to)[6], const uint8_t* data, uintptr_t len);
   void (*send_llcp_packet)(void* user, uint16_t handle, const uint8_t* data, uintptr_t len);
   bool (*get_advertiser_info)(void* user, uint8_t advertising_handle, bool* periodic_enabled);
+  bool (*get_sync_info)(void* user, uint16_t sync_handle, uint8_t (*address)[6], uint8_t* sid);
 };
 
 extern "C" {
@@ -230,6 +231,45 @@ bool link_layer_get_cis_information(const LinkLayer* ll, uint16_t cis_connection
 /// - `info` must be valid for writes of the size of BigInfoFfi
 bool link_layer_get_big_info(const LinkLayer* ll, uint8_t advertising_handle,
                              struct BigInfoFfi* info);
+
+/// Store the BIG information announced by a broadcaster on the periodic
+/// advertising train, keyed by the advertiser address and advertising SID
+/// (receiver side). This is used by HCI LE BIG Create Sync to establish a
+/// sync to the BIG.
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `advertiser_address` - Advertiser address of the periodic advertising train
+/// * `advertising_sid` - Advertising SID of the periodic advertising train
+/// * `info` - The BIG information received from the broadcaster
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointer
+/// - `advertiser_address` must be valid for reads of 6 bytes
+/// - `info` must be valid for reads of the size of BigInfoFfi
+void link_layer_le_big_info_received(const LinkLayer* ll, const uint8_t (*advertiser_address)[6],
+                                     uint8_t advertising_sid, const struct BigInfoFfi* info);
+
+/// Query the BIG/BIS identifiers for a BIS established with the input BIS
+/// connection handle.
+/// Returns true if successful
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `bis_connection_handle` - BIS connection handle
+/// * `big_handle` - Returns the BIG identifier
+/// * `bis_id` - Returns the BIS identifier
+/// * `advertising_handle` - Returns the advertising handle of the BIG
+/// * `max_sdu` - Returns the max SDU length
+/// * `role` - Returns the role (0 = central, 1 = peripheral)
+bool link_layer_get_bis_information(const LinkLayer* ll, uint16_t bis_connection_handle,
+                                    uint8_t* big_handle, uint8_t* bis_id,
+                                    uint8_t* advertising_handle, uint16_t* max_sdu, uint8_t* role);
+
+/// Query the connection handle for a synchronized BIS (receiver side), i.e. a
+/// BIS of a BIG broadcast by the advertiser with the input address.
+/// Returns true if successful
+bool link_layer_get_bis_sync_connection_handle(const LinkLayer* ll,
+                                               const uint8_t (*advertiser_address)[6],
+                                               uint8_t bis_id, uint16_t* bis_connection_handle);
 
 /// Deallocate the link layer instance
 /// # Arguments
