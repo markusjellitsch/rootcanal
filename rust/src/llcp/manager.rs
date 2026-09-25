@@ -166,8 +166,13 @@ impl LinkLayer {
 
     /// Return the connection handle of a BIS that is part of an active BIG
     /// sync with the given advertiser, if any (receiver side).
-    pub fn get_bis_sync_connection_handle(&self, advertiser_address: hci::Address,
-                                          bis_id: u8) -> Option<u16> {
-        self.iso.get_bis_sync_connection_handle(advertiser_address, bis_id)
+    pub fn get_bis_sync_connection_handle(
+        &self,
+        advertiser_address: hci::Address,
+        big_handle: u8,
+        bis_id: u8,
+    ) -> Option<u16> {
+        self.iso
+            .get_bis_sync_connection_handle(advertiser_address, big_handle, bis_id)
     }
 }

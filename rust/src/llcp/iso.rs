@@ -2060,16 +2060,23 @@ impl IsoManager {
 
     /// Return the connection handle of a BIS that is part of an active BIG
     /// sync with the given advertiser, if any (receiver side).
-    pub fn get_bis_sync_connection_handle(&self, advertiser_address: hci::Address,
-                                          bis_id: u8) -> Option<u16> {
+    pub fn get_bis_sync_connection_handle(
+        &self,
+        advertiser_address: hci::Address,
+        big_handle: u8,
+        bis_id: u8,
+    ) -> Option<u16> {
         self.bis_connections.values().find_map(|bis| {
             let synchronized = self
                 .big_sync_config
-                .get(&bis.big_handle)
+                .get(&big_handle)
                 .filter(|config| {
                     config.advertiser_address == advertiser_address && config.bis.contains(&bis_id)
                 });
-            (synchronized.is_some() && bis.role == hci::Role::Peripheral && bis.bis_id == bis_id)
+            (synchronized.is_some()
+                && bis.big_handle == big_handle
+                && bis.role == hci::Role::Peripheral
+                && bis.bis_id == bis_id)
                 .then_some(bis.bis_connection_handle)
         })
     }

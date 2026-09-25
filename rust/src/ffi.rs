@@ -577,6 +577,7 @@ pub unsafe extern "C" fn link_layer_get_bis_information(
 /// # Arguments
 /// * `ll` - link layer pointer
 /// * `advertiser_address` - Advertiser address of the periodic advertising train
+/// * `big_handle` - Identifier of the BIG
 /// * `bis_id` - Identifier of the requested BIS
 /// * `bis_connection_handle` - Returns the handle of the BIS if synchronized
 /// # Safety
@@ -587,13 +588,14 @@ pub unsafe extern "C" fn link_layer_get_bis_information(
 pub unsafe extern "C" fn link_layer_get_bis_sync_connection_handle(
     ll: *const LinkLayer,
     advertiser_address: *const [u8; 6],
+    big_handle: u8,
     bis_id: u8,
     bis_connection_handle: *mut u16,
 ) -> bool {
     let mut ll = ManuallyDrop::new(unsafe { Rc::from_raw(ll) });
     let ll = Rc::get_mut(&mut ll).unwrap();
     let advertiser_address = hci::Address::from(unsafe { &*advertiser_address });
-    ll.get_bis_sync_connection_handle(advertiser_address, bis_id)
+    ll.get_bis_sync_connection_handle(advertiser_address, big_handle, bis_id)
         .map(|handle| unsafe {
             *bis_connection_handle = handle;
         })

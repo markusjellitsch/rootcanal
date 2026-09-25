@@ -5498,14 +5498,16 @@ void LeController::IncomingLeBroadcastIsochronousPdu(LinkLayerPacketView incomin
 
   // Only deliver the BIS SDU to the Host if this receiver has established a
   // BIG sync with the broadcaster for that BIS.
+  uint8_t big_handle = pdu.GetBigHandle();
   uint8_t bis_id = pdu.GetBisId();
   uint16_t bis_connection_handle = 0;
   Address source_address = incoming.GetSourceAddress();
   uint8_t advertiser_address_bytes[6];
   std::copy(source_address.data(), source_address.data() + 6, advertiser_address_bytes);
-  if (!link_layer_get_bis_sync_connection_handle(ll_.get(), &advertiser_address_bytes, bis_id,
-                                                 &bis_connection_handle)) {
-    INFO(id_, "Dropping BIG ISO PDU received on unsynchronized BIS bis_id={}", bis_id);
+  if (!link_layer_get_bis_sync_connection_handle(ll_.get(), &advertiser_address_bytes, big_handle,
+                                                 bis_id, &bis_connection_handle)) {
+    INFO(id_, "Dropping BIG ISO PDU received on unsynchronized BIS big_handle={} bis_id={}",
+         big_handle, bis_id);
     return;
   }
 

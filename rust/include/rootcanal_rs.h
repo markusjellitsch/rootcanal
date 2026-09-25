@@ -265,11 +265,14 @@ bool link_layer_get_bis_information(const LinkLayer* ll, uint16_t bis_connection
                                     uint8_t* advertising_handle, uint16_t* max_sdu, uint8_t* role);
 
 /// Query the connection handle for a synchronized BIS (receiver side), i.e. a
-/// BIS of a BIG broadcast by the advertiser with the input address.
+/// BIS of the BIG broadcast by the advertiser with the input address.
+/// * `big_handle` - Identifier of the BIG
+/// * `bis_id` - Identifier of the requested BIS
 /// Returns true if successful
 bool link_layer_get_bis_sync_connection_handle(const LinkLayer* ll,
                                                const uint8_t (*advertiser_address)[6],
-                                               uint8_t bis_id, uint16_t* bis_connection_handle);
+                                               uint8_t big_handle, uint8_t bis_id,
+                                               uint16_t* bis_connection_handle);
 
 /// Deallocate the link layer instance
 /// # Arguments
