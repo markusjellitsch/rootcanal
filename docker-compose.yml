@@ -1,0 +1,51 @@
+# Copyright 2025 Google Inc. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# RootCanal virtual Bluetooth controller via Docker Compose.
+#
+# The controller image builds the full project from source (Bazel) and runs it
+# through the Python wrapper (`python -m rootcanal`). The container's
+# ENTRYPOINT already invokes the wrapper; no per-service command is needed.
+#
+# Usage:
+#   docker compose up --build         (or: docker compose up rootcanal --build)
+#
+# Exposes the four standard ports:
+#   6401  Test channel   6402  HCI channel
+#   6403  BR/EDR link    6404  BLE link
+
+name: rootcanal
+
+services:
+  rootcanal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Keep in sync with the ARG in Dockerfile.
+        BAZEL_VERSION: "9.2.0"
+    image: rootcanal:latest
+    container_name: rootcanal
+    restart: unless-stopped
+    ports:
+      - "6401:6401"   # Test channel
+      - "6402:6402"   # HCI channel
+      - "6403:6403"   # BR/EDR link channel
+      - "6404:6404"   # BLE link channel
+    # Reuse the Bazel build cache across rebuilds so toolchains and
+    # dependencies are not re-fetched on every `docker compose up --build`.
+    volumes:
+      - rootcanal_bazel_cache:/root/.cache/bazel
+    # Optional: controller configuration / sniffers are forwarded to the
+    # Python wrapper, e.g.:
+    # command:
+    #   - --hci_port=6402
+    #   - --enable_hci_sniffer=true
+
+volumes:
+  rootcanal_bazel_cache:
