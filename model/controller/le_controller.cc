@@ -5502,8 +5502,12 @@ void LeController::IncomingLeBroadcastIsochronousPdu(LinkLayerPacketView incomin
   uint8_t bis_id = pdu.GetBisId();
   uint16_t bis_connection_handle = 0;
   Address source_address = incoming.GetSourceAddress();
+  AddressWithType advertiser_address{source_address, AddressType::RANDOM_DEVICE_ADDRESS};
+  AddressWithType resolved_advertiser_address =
+          ResolvePrivateAddress(advertiser_address).value_or(advertiser_address);
   uint8_t advertiser_address_bytes[6];
-  std::copy(source_address.data(), source_address.data() + 6, advertiser_address_bytes);
+  std::copy(resolved_advertiser_address.GetAddress().data(),
+            resolved_advertiser_address.GetAddress().data() + 6, advertiser_address_bytes);
   if (!link_layer_get_bis_sync_connection_handle(ll_.get(), &advertiser_address_bytes, big_handle,
                                                  bis_id, &bis_connection_handle)) {
     INFO(id_, "Dropping BIG ISO PDU received on unsynchronized BIS big_handle={} bis_id={}",

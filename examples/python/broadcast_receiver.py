@@ -18,10 +18,12 @@ Run with (RootCanal must be running on port 6402):
 import asyncio
 
 from bumble import device, hci
+from bumble.keys import PairingKeys
 from bumble.transport import open_transport
 
 ADDR_A = "F0:F1:F2:F3:F4:F5"
 SID = 1
+BROADCASTER_IRK = bytes.fromhex("00112233445566778899AABBCCDDEEFF")
 
 
 async def main() -> None:
@@ -30,17 +32,46 @@ async def main() -> None:
         await open_transport("tcp-client:127.0.0.1:6402")
     ) as (b_src, b_sink):
         broadcaster = device.Device.from_config_with_hci(
-            device.DeviceConfiguration(name="Broadcaster", address=hci.Address(ADDR_A)),
+            device.DeviceConfiguration(
+                name="Broadcaster",
+                address=hci.Address(ADDR_A),
+                le_privacy_enabled=True,
+                irk=BROADCASTER_IRK,
+            ),
             a_src,
             a_sink,
         )
         receiver = device.Device.from_config_with_hci(
-            device.DeviceConfiguration(name="Receiver"), b_src, b_sink
+            device.DeviceConfiguration(
+                name="Receiver",
+                le_privacy_enabled=True,
+                address_resolution_offload=True,
+            ),
+            b_src,
+            b_sink,
         )
         await broadcaster.power_on()
-        await broadcaster.reset()
         await receiver.power_on()
-        await receiver.reset()
+
+        # Configure the receiver's resolving list with the broadcaster identity
+        # and IRK, then enable controller-side RPA resolution before starting
+        # advertising or periodic sync.
+        resolving_list = receiver.keystore
+        assert resolving_list is not None
+        await resolving_list.update(
+            ADDR_A,
+            PairingKeys(
+                address_type=hci.Address.RANDOM_DEVICE_ADDRESS,
+                irk=PairingKeys.Key(BROADCASTER_IRK),
+            ),
+        )
+        await receiver.refresh_resolving_list()
+        await receiver.send_sync_command(
+            hci.HCI_LE_Set_Address_Resolution_Enable_Command(address_resolution_enable=1)
+        )
+        broadcaster_rpa = broadcaster.random_address
+        assert broadcaster_rpa is not None
+        print(f"Broadcaster RPA: {broadcaster_rpa}")
 
         # --- Broadcaster: extended + periodic advertising + BIG ---
         adv_set = await broadcaster.create_advertising_set(
@@ -48,10 +79,12 @@ async def main() -> None:
                 advertising_event_properties=device.AdvertisingEventProperties(
                     is_connectable=False
                 ),
+                own_address_type=hci.OwnAddressType.RANDOM,
                 primary_advertising_interval_min=100,
                 primary_advertising_interval_max=100,
                 advertising_sid=SID,
             ),
+            random_address=broadcaster_rpa,
             periodic_advertising_parameters=device.PeriodicAdvertisingParameters(
                 periodic_advertising_interval_min=100,
                 periodic_advertising_interval_max=100,
