@@ -24,6 +24,7 @@ from bumble.transport import open_transport
 ADDR_A = "F0:F1:F2:F3:F4:F5"
 SID = 1
 BROADCASTER_IRK = bytes.fromhex("00112233445566778899AABBCCDDEEFF")
+BROADCAST_CODE = bytes.fromhex("FFEEDDCCBBAA99887766554433221100")
 
 
 async def main() -> None:
@@ -102,6 +103,7 @@ async def main() -> None:
                 max_transport_latency=65,
                 rtn=4,
                 phy=hci.PhyBit.LE_1M,
+                broadcast_code=BROADCAST_CODE,
             ),
         )
         print("Broadcaster: BIG created, BIS:", [l.handle for l in big.bis_links])
@@ -152,7 +154,9 @@ async def main() -> None:
         # --- Step 4: LE BIG Create Sync -> Sync Established -> Terminate ---
         big_sync = await receiver.create_big_sync(
             sync,
-            parameters=device.BigSyncParameters(big_sync_timeout=4000, bis=[1, 2]),
+            parameters=device.BigSyncParameters(
+                big_sync_timeout=4000, bis=[1, 2], broadcast_code=BROADCAST_CODE
+            ),
         )
         print("PASS: BIG sync established (step 4):",
               [l.handle for l in big_sync.bis_links])
