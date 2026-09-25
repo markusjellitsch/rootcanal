@@ -81,7 +81,7 @@ struct CigConfig {
 /// BIG configuration.
 #[derive(Clone, Debug, Default)]
 struct BigConfig {
-    // BIG parameters from LeCreateBig command
+    // Parameters shared by all BISes in this BIG.
     big_handle: u8,
     advertising_handle: u8,
     num_bis: u8,
@@ -89,6 +89,13 @@ struct BigConfig {
     max_sdu: u16,
     max_transport_latency: u16,
     rtn: u8,
+    // Explicit BIG transport parameters supplied by LeCreateBigTest.
+    iso_interval: Option<u16>,
+    nse: Option<u8>,
+    bn: Option<u8>,
+    pto: Option<u8>,
+    irc: Option<u8>,
+    max_pdu: Option<u16>,
     phy: u8,
     packing: u8,
     framing: u8,
@@ -97,16 +104,17 @@ struct BigConfig {
 }
 
 impl BigConfig {
-    /// Derive the BIG information announced via the BIGInfo Advertising
-    /// Report, following the same parameter derivation as HCI LE Create BIG
-    /// (see the implementation of `hci_le_create_big`).
+    /// Return the BIG parameters announced via BIGInfo, using explicit test
+    /// values when the BIG was created with LE Create BIG Test.
     fn big_info(&self) -> BigInfo {
-        let iso_interval = (self.sdu_interval as f64 / 1250.0).ceil() as u16;
-        let bn: u8 = 1;
-        let nse: u8 = bn * (self.rtn + 1);
-        let pto: u8 = 0;
-        let irc: u8 = self.rtn + 1;
-        let max_pdu: u16 = self.max_sdu;
+        let iso_interval = self.iso_interval.unwrap_or_else(|| {
+            (self.sdu_interval as f64 / 1250.0).ceil() as u16
+        });
+        let bn = self.bn.unwrap_or(1);
+        let nse = self.nse.unwrap_or(bn * (self.rtn + 1));
+        let pto = self.pto.unwrap_or(0);
+        let irc = self.irc.unwrap_or(self.rtn + 1);
+        let max_pdu = self.max_pdu.unwrap_or(self.max_sdu);
         BigInfo {
             num_bis: self.num_bis,
             nse,
@@ -1945,6 +1953,12 @@ impl IsoManager {
             max_sdu,
             max_transport_latency,
             rtn,
+            iso_interval: None,
+            nse: None,
+            bn: None,
+            pto: None,
+            irc: None,
+            max_pdu: None,
             phy,
             packing,
             framing,
@@ -1976,6 +1990,122 @@ impl IsoManager {
             big_handle,
             big_sync_delay: 0,
             transport_latency_big: sdu_interval * 2,
+            phy: hci::SecondaryPhyType::try_from(phy).unwrap_or(hci::SecondaryPhyType::Le1m),
+            nse,
+            bn,
+            pto,
+            irc,
+            max_pdu,
+            iso_interval,
+            connection_handle: bis_connection_handles,
+        });
+    }
+
+    /// Handle HCI LE Create BIG Test (Vol 4, Part E § 7.8.104). Unlike
+    /// LE Create BIG, this command supplies the BIG/BIS transport parameters
+    /// directly rather than having the controller derive them from latency
+    /// and retransmission targets.
+    pub fn hci_le_create_big_test(&mut self, packet: hci::LeCreateBigTest) {
+        let command_status = |status| hci::LeCreateBigTestStatus {
+            status,
+            num_hci_command_packets: 1,
+        };
+        let big_handle = packet.big_handle();
+        let advertising_handle = packet.advertising_handle();
+        let num_bis = packet.num_bis();
+        let sdu_interval = packet.sdu_interval();
+        let iso_interval = packet.iso_interval();
+        let nse = packet.nse();
+        let max_sdu = packet.max_sdu();
+        let max_pdu = packet.max_pdu();
+        let phy: u8 = packet.phy().into();
+        let packing: u8 = packet.packing().into();
+        let framing: u8 = packet.framing().into();
+        let bn = packet.bn();
+        let irc = packet.irc();
+        let pto = packet.pto();
+        let encryption: u8 = packet.encryption().into();
+        let broadcast_code = packet.broadcast_code();
+
+        if big_handle > 0xEF {
+            return self.send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+        if self.big_config.contains_key(&big_handle) {
+            return self.send_hci_event(command_status(hci::ErrorCode::CommandDisallowed));
+        }
+        if advertising_handle > 0xEF {
+            return self.send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+        let mut periodic_enabled = false;
+        if !self.ops.get_advertiser_info(advertising_handle, &mut periodic_enabled)
+            || !periodic_enabled
+            || self.big_config.values().any(|big| big.advertising_handle == advertising_handle)
+        {
+            return self.send_hci_event(command_status(hci::ErrorCode::UnknownAdvertisingIdentifier));
+        }
+        if !(1..=0x1F).contains(&num_bis)
+            || !(0xFF..=0x0F_FFFF).contains(&sdu_interval)
+            || !(0x0001..=0x0FFF).contains(&max_sdu)
+            || !(0x0001..=0x0FFF).contains(&max_pdu)
+            || !(0x0004..=0x0C80).contains(&iso_interval)
+            || !(1..=0x1F).contains(&nse)
+            || !(1..=0x07).contains(&bn)
+            || bn > nse
+            || irc == 0
+            || irc > nse
+            || (nse as u16) < (bn as u16) * (irc as u16)
+            || (nse as u16) > (bn as u16) * (irc as u16) + (pto as u16) * (bn as u16)
+            || pto > 0x0F
+            || (phy != 1 && phy != 2 && phy != 3)
+            || packing > 1
+            || framing > 1
+            || encryption > 1
+        {
+            return self.send_hci_event(command_status(hci::ErrorCode::InvalidHciCommandParameters));
+        }
+
+        self.send_hci_event(command_status(hci::ErrorCode::Success));
+        self.big_config.insert(big_handle, BigConfig {
+            big_handle,
+            advertising_handle,
+            num_bis,
+            sdu_interval,
+            max_sdu,
+            max_transport_latency: 0,
+            rtn: 0,
+            iso_interval: Some(iso_interval),
+            nse: Some(nse),
+            bn: Some(bn),
+            pto: Some(pto),
+            irc: Some(irc),
+            max_pdu: Some(max_pdu),
+            phy,
+            packing,
+            framing,
+            encryption: encryption != 0,
+            broadcast_code: *broadcast_code,
+        });
+
+        let mut bis_connection_handles = vec![];
+        for bis_id in 1..=num_bis {
+            let bis_connection_handle = self.new_bis_connection_handle();
+            self.bis_connections.insert(bis_connection_handle, Bis {
+                bis_connection_handle,
+                big_handle,
+                bis_id,
+                advertising_handle,
+                role: hci::Role::Central,
+                max_sdu,
+                iso_data_path: None,
+            });
+            bis_connection_handles.push(bis_connection_handle);
+        }
+
+        self.send_hci_event(hci::LeCreateBigComplete {
+            status: hci::ErrorCode::Success,
+            big_handle,
+            big_sync_delay: 0,
+            transport_latency_big: (iso_interval as u32) * 1250,
             phy: hci::SecondaryPhyType::try_from(phy).unwrap_or(hci::SecondaryPhyType::Le1m),
             nse,
             bn,
