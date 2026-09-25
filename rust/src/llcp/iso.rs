@@ -2270,12 +2270,10 @@ impl IsoManager {
         self.bis_connections
             .retain(|_, bis| bis.big_handle != big_handle || bis.role != hci::Role::Peripheral);
 
-        // Send command complete, then the LE BIG Sync Lost event.
+        // Send the command complete event. Per Vol 4, Part E § 7.8.107, a clean
+        // Host-initiated termination completes with LE_BIG_Terminate_Sync_Complete;
+        // LE_BIG_Sync_Lost is reserved for unexpected sync failures/losses.
         self.send_hci_event(command_complete(hci::ErrorCode::Success));
-        self.send_hci_event(hci::LeBigSyncLost {
-            big_handle,
-            reason: hci::ErrorCode::Success,
-        });
     }
 }
 
