@@ -2060,21 +2060,31 @@ impl IsoManager {
 
     /// Return the connection handle of a BIS that is part of an active BIG
     /// sync with the given advertiser, if any (receiver side).
+    ///
+    /// The BIG_Handle is allocated independently by each Host. The `big_handle`
+    /// carried in the broadcast PDU belongs to the broadcaster and need not
+    /// match this receiver's local sync handle (which the receiving Host may
+    /// reuse and can therefore drift across sessions). The sync must be located
+    /// by the advertiser identity, never by the on-air BIG_Handle, so that
+    /// routing stays independent of the handles the hosts happen to pick.
     pub fn get_bis_sync_connection_handle(
         &self,
         advertiser_address: hci::Address,
-        big_handle: u8,
+        _remote_big_handle: u8,
         bis_id: u8,
     ) -> Option<u16> {
+        // Locate the active sync established for this advertiser that selected
+        // the requested BIS, and read its local BIG_Handle.
+        let local_big_handle = *self
+            .big_sync_config
+            .iter()
+            .find(|(_, config)| {
+                config.advertiser_address == advertiser_address && config.bis.contains(&bis_id)
+            })?
+            .0;
+
         self.bis_connections.values().find_map(|bis| {
-            let synchronized = self
-                .big_sync_config
-                .get(&big_handle)
-                .filter(|config| {
-                    config.advertiser_address == advertiser_address && config.bis.contains(&bis_id)
-                });
-            (synchronized.is_some()
-                && bis.big_handle == big_handle
+            (bis.big_handle == local_big_handle
                 && bis.role == hci::Role::Peripheral
                 && bis.bis_id == bis_id)
                 .then_some(bis.bis_connection_handle)
