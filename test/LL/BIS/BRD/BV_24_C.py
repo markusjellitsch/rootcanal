@@ -28,13 +28,10 @@ class Test(BVBroadcastSetupAndData):
     # LL/BIS/BRD/BV-24-C [BIS Broadcast Setup and Data, Broadcaster role,
     # BN = 1, Encryption Enabled]
     #
-    # This test is the BN = 1 variant of the Broadcast Isochronous Stream
-    # Setup test with encryption enabled (cf. LL.TS.p28 Table 4.11-3). The
-    # BIG is created with a single BIS (Default_TxNumBIS = 1, cf. Table
-    # 4.11-2 "Common Parameters, BN = 1") and with Encryption enabled, so the
-    # BIGInfo announced on the periodic advertising train includes the
-    # encryption fields and carries the Encryption bit set.
+    # This test uses default BIG parameters with BN = 1 and Encryption enabled,
+    # as specified in LL.TS.p28 Table 4.11-3.
     Num_BIS = 0x01
+    BN = 1
     Max_SDU = 32  # Default_Data_Size, Unframed, BN = 1
     Encryption = hci.Enable.ENABLED
     Broadcast_Code = bytearray([0x22] * 16)
@@ -49,31 +46,31 @@ class Test(BVBroadcastSetupAndData):
         # advertising train (the pre-requisite for creating a BIG).
         await self.setup_extended_advertiser()
 
-        # 1. The Upper Tester sends an HCI_LE_Create_BIG command to the IUT with
-        # the Advertising_Handle of the periodic advertising train, Num_BIS,
-        # SDU_Interval, Max_SDU, Max_Transport_Latency, RTN, PHY, Packing,
-        # Framing, Encryption and Broadcast_Code set to valid values, with a
-        # single BIS (BN = 1 parameters) and Encryption enabled. The IUT
-        # responds with a successful HCI_Command_Status event.
+        # 1. Create a single BIS with the default parameters, BN = 1, and
+        # Encryption enabled using HCI_LE_Create_BIG_Test.
         controller.send_cmd(
-            hci.LeCreateBig(
+            hci.LeCreateBigTest(
                 big_handle=big_handle,
                 advertising_handle=self.Advertising_Handle,
                 num_bis=self.Num_BIS,
                 sdu_interval=self.SDU_Interval,
+                iso_interval=self.ISO_Interval,
+                nse=self.NSE,
                 max_sdu=self.Max_SDU,
-                max_transport_latency=self.Max_Transport_Latency,
-                rtn=self.RTN,
+                max_pdu=self.Max_PDU,
                 phy=self.PHY,
                 packing=self.Packing,
                 framing=self.Framing,
+                bn=self.BN,
+                irc=self.IRC,
+                pto=self.PTO,
                 encryption=self.Encryption,
                 broadcast_code=self.Broadcast_Code,
             )
         )
 
         await self.expect_evt(
-            hci.LeCreateBigStatus(
+            hci.LeCreateBigTestStatus(
                 status=ErrorCode.SUCCESS, num_hci_command_packets=1
             )
         )
@@ -86,6 +83,12 @@ class Test(BVBroadcastSetupAndData):
         self.assertEqual(complete.status, ErrorCode.SUCCESS)
         self.assertEqual(complete.big_handle, big_handle)
         self.assertEqual(len(complete.connection_handle), self.Num_BIS)
+        self.assertEqual(complete.nse, self.NSE)
+        self.assertEqual(complete.bn, self.BN)
+        self.assertEqual(complete.pto, self.PTO)
+        self.assertEqual(complete.irc, self.IRC)
+        self.assertEqual(complete.max_pdu, self.Max_PDU)
+        self.assertEqual(complete.phy, self.PHY)
         for handle in complete.connection_handle:
             self.assertGreaterEqual(handle, self.Min_BIS_Connection_Handle)
             self.assertLessEqual(handle, self.Max_BIS_Connection_Handle)
@@ -119,10 +122,9 @@ class Test(BVBroadcastSetupAndData):
             )
         )
 
-        # 5. The Lower Tester receives the (unencrypted payload of the) BIS
-        # Data PDU broadcast by the IUT on the virtual air, carrying the BIS
-        # SDU as sent by the Host, and the controller reports it as a completed
-        # packet to the Host.
+        # 5. The Lower Tester receives the BIS Data PDU broadcast by the IUT
+        # on the virtual air, carrying the BIS SDU as sent by the Host, and the
+        # controller reports it as a completed packet to the Host.
         await self.expect_ll(
             ll.LeBroadcastIsochronousPdu(
                 source_address=controller.address,

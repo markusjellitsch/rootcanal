@@ -28,19 +28,14 @@ class Test(BVBroadcastSetupAndData):
     # LL/BIS/BRD/BV-23-C [BIS Broadcast Setup and Data, Broadcaster role,
     # BN = 1]
     #
-    # This test is identical to LL/BIS/BRD/BV-01-C (Broadcast Isochronous
-    # Stream Setup) except that the BIG is created with the default BIG
-    # parameters and a Burst Number (BN) of 1, in which case "there is a BIS
-    # PDU in every subevent" and the BIGInfo announced on the periodic
-    # advertising train shall carry BN set to 1 and no encryption fields
-    # (cf. LL.TS.p28 Table 4.11-3). The over-the-air behaviour otherwise
-    # matches the BV-01-C procedure (Broadcast Isochronous Stream Setup,
-    # Broadcaster).
+    # This test uses the default BIG parameters with BN = 1 and no encryption
+    # fields, as specified in LL.TS.p28 Table 4.11-3.
     Encryption = hci.Enable.DISABLED
     Broadcast_Code = bytearray([0x00] * 16)
 
     # BN = 1: every subevent contains a BIS Data PDU.
     BN = 1
+    Num_BIS = 0x01
 
     # LL/BIS/BRD/BV-23-C [BIS Broadcast Setup and Data, Broadcaster role]
     async def test(self):
@@ -52,43 +47,47 @@ class Test(BVBroadcastSetupAndData):
         # advertising train (the pre-requisite for creating a BIG).
         await self.setup_extended_advertiser()
 
-        # 1. The Upper Tester sends an HCI_LE_Create_BIG command to the IUT with
-        # the Advertising_Handle of the periodic advertising train, Num_BIS,
-        # SDU_Interval, Max_SDU, Max_Transport_Latency, the default BIG
-        # parameters with BN set to 1, and Encryption disabled. The IUT
-        # responds with a successful HCI_Command_Status event. Framing is 0x00
-        # (Unframed).
+        # 1. Create a single BIS with the default parameters and BN = 1 using
+        # HCI_LE_Create_BIG_Test, as specified in LL.TS.p28 Table 4.11-3.
         controller.send_cmd(
-            hci.LeCreateBig(
+            hci.LeCreateBigTest(
                 big_handle=big_handle,
                 advertising_handle=self.Advertising_Handle,
                 num_bis=self.Num_BIS,
                 sdu_interval=self.SDU_Interval,
+                iso_interval=self.ISO_Interval,
+                nse=self.NSE,
                 max_sdu=self.Max_SDU,
-                max_transport_latency=self.Max_Transport_Latency,
-                rtn=self.RTN,
+                max_pdu=self.Max_PDU,
                 phy=self.PHY,
                 packing=self.Packing,
                 framing=self.Framing,
+                bn=self.BN,
+                irc=self.IRC,
+                pto=self.PTO,
                 encryption=self.Encryption,
                 broadcast_code=self.Broadcast_Code,
             )
         )
 
         await self.expect_evt(
-            hci.LeCreateBigStatus(
+            hci.LeCreateBigTestStatus(
                 status=ErrorCode.SUCCESS, num_hci_command_packets=1
             )
         )
 
-        # 2. The IUT finishes creating the BIG and the Upper Tester receives a
-        # successful HCI_LE_Create_BIG_Complete event. The BIG_Handle is as
-        # provided by the Upper Tester, BIS_Count equals Num_BIS, and the
-        # Controller BIS_Connection_Handle values are valid.
+        # 2. The IUT finishes creating the BIG and reports the supplied
+        # transport parameters and PHY in HCI_LE_Create_BIG_Complete.
         complete = await self.expect_evt(hci.LeCreateBigComplete)
         self.assertEqual(complete.status, ErrorCode.SUCCESS)
         self.assertEqual(complete.big_handle, big_handle)
         self.assertEqual(len(complete.connection_handle), self.Num_BIS)
+        self.assertEqual(complete.nse, self.NSE)
+        self.assertEqual(complete.bn, self.BN)
+        self.assertEqual(complete.pto, self.PTO)
+        self.assertEqual(complete.irc, self.IRC)
+        self.assertEqual(complete.max_pdu, self.Max_PDU)
+        self.assertEqual(complete.phy, self.PHY)
         for handle in complete.connection_handle:
             self.assertGreaterEqual(handle, self.Min_BIS_Connection_Handle)
             self.assertLessEqual(handle, self.Max_BIS_Connection_Handle)

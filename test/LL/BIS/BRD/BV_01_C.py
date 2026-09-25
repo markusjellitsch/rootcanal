@@ -26,14 +26,19 @@ class Test(ControllerTest):
     # Test parameters used by the BIS Broadcaster role (LL/BIS/BRD).
     Advertising_Handle = 0x0F
     Advertising_SID = 0x02
-    Num_BIS = 0x02
+    Num_BIS = 0x01
+    Num_BIS_BN1 = 0x01
     SDU_Interval = 10000  # 10ms
-    Max_SDU = 100
-    Max_Transport_Latency = 65  # 65ms
-    RTN = 2
+    ISO_Interval = 8  # 10ms in 1.25ms units
+    NSE = 4
+    Max_SDU = 32
+    Max_PDU = 32
     PHY = hci.SecondaryPhyType.LE_1M
     Packing = hci.Packing.SEQUENTIAL
     Framing = hci.Enable.DISABLED
+    BN = 2
+    IRC = 2
+    PTO = 0
     Encryption = hci.Enable.DISABLED
     Broadcast_Code = bytearray([0x00] * 16)
 
@@ -139,42 +144,50 @@ class Test(ControllerTest):
         # advertising train (the pre-requisite for creating a BIG).
         await self.setup_extended_advertiser()
 
-        # 1. The Upper Tester sends an HCI_LE_Create_BIG command to the IUT with
-        # the Advertising_Handle of the periodic advertising train, Num_BIS,
-        # SDU_Interval, Max_SDU, Max_Transport_Latency, RTN, PHY, Packing,
-        # Framing, Encryption and Broadcast_Code set to valid values. The IUT
-        # responds with a successful HCI_Command_Status event.
+        # 1. The Upper Tester sends HCI_LE_Create_BIG_Test to establish a
+        # single BIS using the default BIG parameters in LL.TS.p28 Table 4.11-3.
+        # The IUT responds with a successful HCI_Command_Status event.
         controller.send_cmd(
-            hci.LeCreateBig(
+            hci.LeCreateBigTest(
                 big_handle=big_handle,
                 advertising_handle=self.Advertising_Handle,
                 num_bis=self.Num_BIS,
                 sdu_interval=self.SDU_Interval,
+                iso_interval=self.ISO_Interval,
+                nse=self.NSE,
                 max_sdu=self.Max_SDU,
-                max_transport_latency=self.Max_Transport_Latency,
-                rtn=self.RTN,
+                max_pdu=self.Max_PDU,
                 phy=self.PHY,
                 packing=self.Packing,
                 framing=self.Framing,
+                bn=self.BN,
+                irc=self.IRC,
+                pto=self.PTO,
                 encryption=self.Encryption,
                 broadcast_code=self.Broadcast_Code,
             )
         )
 
         await self.expect_evt(
-            hci.LeCreateBigStatus(
+            hci.LeCreateBigTestStatus(
                 status=ErrorCode.SUCCESS, num_hci_command_packets=1
             )
         )
 
         # 2. The IUT finishes creating the BIG and the Upper Tester receives a
-        # successful HCI_LE_Create_BIG_Complete event. The BIG_Handle is as
-        # provided by the Upper Tester, BIS_Count equals Num_BIS, and the
-        # Controllers BIS_Connection_Handle values are valid.
+        # successful HCI_LE_Create_BIG_Complete event with the NSE, BN, PTO,
+        # IRC, and Max_PDU values supplied in Step 1, and with the PHY used to
+        # create the BIG.
         complete = await self.expect_evt(hci.LeCreateBigComplete)
         self.assertEqual(complete.status, ErrorCode.SUCCESS)
         self.assertEqual(complete.big_handle, big_handle)
         self.assertEqual(len(complete.connection_handle), self.Num_BIS)
+        self.assertEqual(complete.nse, self.NSE)
+        self.assertEqual(complete.bn, self.BN)
+        self.assertEqual(complete.pto, self.PTO)
+        self.assertEqual(complete.irc, self.IRC)
+        self.assertEqual(complete.max_pdu, self.Max_PDU)
+        self.assertEqual(complete.phy, self.PHY)
         for handle in complete.connection_handle:
             self.assertGreaterEqual(handle, self.Min_BIS_Connection_Handle)
             self.assertLessEqual(handle, self.Max_BIS_Connection_Handle)

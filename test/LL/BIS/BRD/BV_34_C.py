@@ -25,21 +25,13 @@ from test.LL.BIS.BRD.BV_01_C import Test as BVBroadcastSetupAndData
 
 class Test(BVBroadcastSetupAndData):
 
-    # LL/BIS/BRD/BV-34-C [BIS Broadcast Setup and Data, Broadcaster role,
-    # BN = 1, Periodic Advertising with Responses, Encryption Disabled]
-    #
-    # Per LL.TS.p28 Table 4.11-3 this is the BN = 1 variant of the Broadcast
-    # Isochronous Stream Setup test with Encryption disabled. According to
-    # Table 4.11-4 the BIG shall be created over a "Periodic Advertising with
-    # Responses" (PAwR / AUX_SYNC_SUBEVENT_IND) train. The PAwR HCI handlers
-    # (LE_Set_Periodic_Advertising_Parameters_V2 / Subevent_Data) are not
-    # implemented by the controller in this build (see the commented-out
-    # handlers in model/controller/dual_mode_controller.cc), so the periodic
-    # advertising train used here is the "without Responses" AUX_SYNC_IND
-    # variant used by the other setup tests. As a result the on-air behaviour
-    # exercised here is equivalent to LL/BIS/BRD/BV-23-C; the PAwR-specific
-    # behaviour cannot be verified with the current controller.
+    # LL/BIS/BRD/BV-34-C requires Periodic Advertising with Responses
+    # (AUX_SYNC_SUBEVENT_IND) per LL.TS.p28 Table 4.11-4. The controller does
+    # not currently implement the required PAwR setup; this test still uses the
+    # prescribed HCI_LE_Create_BIG_Test parameters but exercises the available
+    # periodic advertising without responses.
     Num_BIS = 0x01
+    BN = 1
     Max_SDU = 32  # Default_Data_Size, Unframed, BN = 1
     Encryption = hci.Enable.DISABLED
 
@@ -53,31 +45,32 @@ class Test(BVBroadcastSetupAndData):
         # advertising train (the pre-requisite for creating a BIG).
         await self.setup_extended_advertiser()
 
-        # 1. The Upper Tester sends an HCI_LE_Create_BIG command to the IUT with
-        # the Advertising_Handle of the periodic advertising train, Num_BIS,
-        # SDU_Interval, Max_SDU, Max_Transport_Latency, RTN, PHY, Packing,
-        # Framing, Encryption and Broadcast_Code set to valid values, with a
-        # single BIS (BN = 1 parameters) and Encryption disabled. The IUT
-        # responds with a successful HCI_Command_Status event.
+        # 1. Create a single BIS with the default parameters and BN = 1 using
+        # HCI_LE_Create_BIG_Test. The required PAwR train is not available in
+        # this controller; the rest of the setup follows the BV-23-C values.
         controller.send_cmd(
-            hci.LeCreateBig(
+            hci.LeCreateBigTest(
                 big_handle=big_handle,
                 advertising_handle=self.Advertising_Handle,
                 num_bis=self.Num_BIS,
                 sdu_interval=self.SDU_Interval,
+                iso_interval=self.ISO_Interval,
+                nse=self.NSE,
                 max_sdu=self.Max_SDU,
-                max_transport_latency=self.Max_Transport_Latency,
-                rtn=self.RTN,
+                max_pdu=self.Max_PDU,
                 phy=self.PHY,
                 packing=self.Packing,
                 framing=self.Framing,
+                bn=self.BN,
+                irc=self.IRC,
+                pto=self.PTO,
                 encryption=self.Encryption,
                 broadcast_code=self.Broadcast_Code,
             )
         )
 
         await self.expect_evt(
-            hci.LeCreateBigStatus(
+            hci.LeCreateBigTestStatus(
                 status=ErrorCode.SUCCESS, num_hci_command_packets=1
             )
         )
@@ -90,6 +83,12 @@ class Test(BVBroadcastSetupAndData):
         self.assertEqual(complete.status, ErrorCode.SUCCESS)
         self.assertEqual(complete.big_handle, big_handle)
         self.assertEqual(len(complete.connection_handle), self.Num_BIS)
+        self.assertEqual(complete.nse, self.NSE)
+        self.assertEqual(complete.bn, self.BN)
+        self.assertEqual(complete.pto, self.PTO)
+        self.assertEqual(complete.irc, self.IRC)
+        self.assertEqual(complete.max_pdu, self.Max_PDU)
+        self.assertEqual(complete.phy, self.PHY)
         for handle in complete.connection_handle:
             self.assertGreaterEqual(handle, self.Min_BIS_Connection_Handle)
             self.assertLessEqual(handle, self.Max_BIS_Connection_Handle)
