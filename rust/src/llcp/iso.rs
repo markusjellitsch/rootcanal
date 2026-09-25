@@ -96,6 +96,89 @@ struct BigConfig {
     broadcast_code: [u8; 16],
 }
 
+impl BigConfig {
+    /// Derive the BIG information announced via the BIGInfo Advertising
+    /// Report, following the same parameter derivation as HCI LE Create BIG
+    /// (see the implementation of `hci_le_create_big`).
+    fn big_info(&self) -> BigInfo {
+        let iso_interval = (self.sdu_interval as f64 / 1250.0).ceil() as u16;
+        let bn: u8 = 1;
+        let nse: u8 = bn * (self.rtn + 1);
+        let pto: u8 = 0;
+        let irc: u8 = self.rtn + 1;
+        let max_pdu: u16 = self.max_sdu;
+        BigInfo {
+            num_bis: self.num_bis,
+            nse,
+            iso_interval,
+            bn,
+            pto,
+            irc,
+            max_pdu,
+            sdu_interval: self.sdu_interval,
+            max_sdu: self.max_sdu,
+            phy: self.phy,
+            framing: self.framing,
+            encryption: self.encryption,
+        }
+    }
+}
+
+/// BIG information, announced by a broadcaster in the BIGInfo Advertising
+/// Report (cf Vol 4, Part E § 7.7.65.34).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BigInfo {
+    num_bis: u8,
+    nse: u8,
+    iso_interval: u16,
+    bn: u8,
+    pto: u8,
+    irc: u8,
+    max_pdu: u16,
+    sdu_interval: u32,
+    max_sdu: u16,
+    phy: u8,
+    framing: u8,
+    encryption: bool,
+}
+
+/// C ABI representation of BigInfo exchanged with the controller.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BigInfoFfi {
+    num_bis: u8,
+    nse: u8,
+    iso_interval: u16,
+    bn: u8,
+    pto: u8,
+    irc: u8,
+    max_pdu: u16,
+    sdu_interval: u32,
+    max_sdu: u16,
+    phy: u8,
+    framing: u8,
+    encryption: u8,
+}
+
+impl From<BigInfo> for BigInfoFfi {
+    fn from(value: BigInfo) -> Self {
+        Self {
+            num_bis: value.num_bis,
+            nse: value.nse,
+            iso_interval: value.iso_interval,
+            bn: value.bn,
+            pto: value.pto,
+            irc: value.irc,
+            max_pdu: value.max_pdu,
+            sdu_interval: value.sdu_interval,
+            max_sdu: value.max_sdu,
+            phy: value.phy,
+            framing: value.framing,
+            encryption: u8::from(value.encryption),
+        }
+    }
+}
+
 /// CIS configuration.
 #[derive(Clone, Debug, Default)]
 struct CisConfig {
@@ -1892,6 +1975,16 @@ impl IsoManager {
         // Spec: "The Controller shall send an HCI_LE_Terminate_BIG_Complete
         // event to the Host."
         self.send_hci_event(hci::LeTerminateBigComplete { big_handle, reason });
+    }
+
+    /// Return the BIG information for a BIG created on this controller
+    /// with the given advertising handle, if any. The BIGInfo is announced
+    /// by the controller on the periodic advertising train.
+    pub fn get_big_info(&self, advertising_handle: u8) -> Option<BigInfo> {
+        self.big_config
+            .values()
+            .find(|big| big.advertising_handle == advertising_handle)
+            .map(BigConfig::big_info)
     }
 }
 

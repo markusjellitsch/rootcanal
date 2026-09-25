@@ -389,6 +389,35 @@ pub unsafe extern "C" fn link_layer_get_cis_connection_handle(
         .is_some()
 }
 
+/// Query the BIG information announced by the BIG associated with the given
+/// advertising handle (broadcaster side). Returns true if successful.
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `advertising_handle` - Advertising handle of the periodic advertising train
+/// * `info` - Returns the BIG information
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointer
+/// - `info` must be valid for writes of the size of BigInfoFfi
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn link_layer_get_big_info(
+    ll: *const LinkLayer,
+    advertising_handle: u8,
+    info: *mut crate::llcp::iso::BigInfoFfi,
+) -> bool {
+    let mut ll = ManuallyDrop::new(unsafe { Rc::from_raw(ll) });
+    let ll = Rc::get_mut(&mut ll).unwrap();
+    match ll.get_big_info(advertising_handle) {
+        Some(big_info) => {
+            unsafe {
+                *info = big_info.into();
+            }
+            true
+        }
+        None => false,
+    }
+}
+
 /// Query the CIS and CIG identifiers for a CIS established with
 /// the input CIS connection handle.
 /// Returns true if successful

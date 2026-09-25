@@ -138,4 +138,10 @@ impl LinkLayer {
     pub fn get_cis(&self, cis_connection_handle: u16) -> Option<&iso::Cis> {
         self.iso.get_cis(cis_connection_handle)
     }
+
+    /// Return the BIG information for the BIG associated with the given
+    /// advertising handle, if any (broadcaster side).
+    pub fn get_big_info(&self, advertising_handle: u8) -> Option<iso::BigInfo> {
+        self.iso.get_big_info(advertising_handle)
+    }
 }

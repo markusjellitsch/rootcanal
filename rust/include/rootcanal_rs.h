@@ -23,6 +23,23 @@ struct LinkLayer;
 
 #include <stdint.h>
 
+/// BIG information, announced by a broadcaster in the BIGInfo Advertising
+/// Report. Matches the fields sent in the HCI LE BIGInfo Advertising Report.
+struct BigInfoFfi {
+  uint8_t num_bis;
+  uint8_t nse;
+  uint16_t iso_interval;
+  uint8_t bn;
+  uint8_t pto;
+  uint8_t irc;
+  uint16_t max_pdu;
+  uint32_t sdu_interval;
+  uint16_t max_sdu;
+  uint8_t phy;
+  uint8_t framing;
+  uint8_t encryption;
+};
+
 /// Link Manager callbacks
 struct ControllerOps {
   void* user_pointer;
@@ -200,6 +217,19 @@ bool link_layer_get_cis_connection_handle(const LinkLayer* ll, uint8_t cig_id, u
 bool link_layer_get_cis_information(const LinkLayer* ll, uint16_t cis_connection_handle,
                                     uint16_t* acl_connection_handle, uint8_t* cig_id,
                                     uint8_t* cis_id, uint16_t* max_sdu_tx);
+
+/// Query the BIG information announced by the BIG associated with the given
+/// advertising handle (broadcaster side). Returns true if successful.
+/// # Arguments
+/// * `ll` - link layer pointer
+/// * `advertising_handle` - Advertising handle of the periodic advertising train
+/// * `info` - Returns the BIG information
+/// # Safety
+/// - This should be called from the thread of creation
+/// - `ll` must be a valid pointer
+/// - `info` must be valid for writes of the size of BigInfoFfi
+bool link_layer_get_big_info(const LinkLayer* ll, uint8_t advertising_handle,
+                             struct BigInfoFfi* info);
 
 /// Deallocate the link layer instance
 /// # Arguments

@@ -6227,7 +6227,7 @@ packet LeCreateBigComplete : LeMetaEvent (subevent_code = LE_CREATE_BIG_COMPLETE
   irc : 8,
   max_pdu : 16,
   iso_interval : 16,
-  _size_(connection_handle) : 8,
+  _count_(connection_handle) : 8,
   connection_handle : 16[],
 }
 

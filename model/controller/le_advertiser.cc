@@ -565,6 +565,12 @@ ErrorCode LeController::LeSetExtendedAdvertisingParameters(
   advertiser.scan_request_notification_enable = scan_request_notification_enable;
 
   extended_advertisers_.insert_or_assign(advertising_handle, std::move(advertiser));
+
+  // Wire the ACAD (BIGInfo) builder to the controller so that periodic
+  // advertising can carry the BIGInfo of a BIG associated with this train.
+  extended_advertisers_[advertising_handle].periodic_acad_builder =
+          [this](uint8_t handle, std::vector<uint8_t>& acad) { BuildLeBigInfoAcad(handle, acad); };
+
   return ErrorCode::SUCCESS;
 }
 
@@ -1776,13 +1782,22 @@ void LeController::LeAdvertising() {
     // and a full interval has passed since the last event.
     if (advertiser.IsPeriodicEnabled() && now >= advertiser.next_periodic_event) {
       advertiser.next_periodic_event += advertiser.periodic_advertising_interval;
+
+      // Build the ACAD payload. If a BIG is associated with this periodic
+      // advertising train, the ACAD carries the BIGInfo which receivers use
+      // to discover and synchronize to the BIG (cf Vol 6, Part B § 2.3.2.3.2).
+      std::vector<uint8_t> acad;
+      if (advertiser.periodic_acad_builder) {
+        advertiser.periodic_acad_builder(advertiser.advertising_handle, acad);
+      }
+
       SendLeLinkLayerPacket(model::packets::LePeriodicAdvertisingPduBuilder::Create(
                                     advertiser.advertising_address.GetAddress(), Address(),
                                     static_cast<model::packets::AddressType>(
                                             advertiser.advertising_address.GetAddressType()),
                                     advertiser.advertising_sid, advertiser.advertising_tx_power,
                                     advertiser.periodic_advertising_interval.count(),
-                                    advertiser.periodic_advertising_data),
+                                    std::move(acad), advertiser.periodic_advertising_data),
                             advertiser.advertising_tx_power);
     }
   }

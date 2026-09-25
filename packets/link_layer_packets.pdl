@@ -200,6 +200,8 @@ packet LePeriodicAdvertisingPdu : LinkLayerPacket (type = LE_PERIODIC_ADVERTISIN
   sid: 8, // 0xff when not provided
   tx_power: 8,
   advertising_interval: 16,
+  _size_(acad) : 8,
+  acad : 8[],
   advertising_data: 8[],
 }
 

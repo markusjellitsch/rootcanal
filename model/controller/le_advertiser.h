@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <ratio>
 #include <vector>
@@ -173,6 +174,13 @@ public:
 
   // Time keeping for periodic advertising.
   std::chrono::steady_clock::time_point next_periodic_event{};
+
+  // Callback invoked before each periodic advertising event, with the
+  // advertising handle and a buffer to fill with the ACAD payload. The
+  // controller uses it to include the BIGInfo of a BIG associated with the
+  // periodic advertising train in the ACAD field of the periodic advertising
+  // PDU (AUX_SYNC_IND), so receivers can discover and synchronize to the BIG.
+  std::function<void(uint8_t, std::vector<uint8_t>&)> periodic_acad_builder{};
 
   // Enabled state.
   uint8_t max_extended_advertising_events{0};

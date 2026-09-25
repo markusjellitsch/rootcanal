@@ -588,6 +588,10 @@ protected:
                                   model::packets::LinkLayerPacketView incoming);
   void IncomingLlcpPacket(model::packets::LinkLayerPacketView incoming);
   void IncomingLeConnectedIsochronousPdu(model::packets::LinkLayerPacketView incoming);
+  // Fills `acad` with the BIGInfo AD payload announced on the periodic
+  // advertising train (AUX_SYNC_IND ACAD field) for the given advertising
+  // handle, if a BIG is associated with it.
+  void BuildLeBigInfoAcad(uint8_t advertising_handle, std::vector<uint8_t>& acad);
 
   void ScanIncomingLeLegacyAdvertisingPdu(model::packets::LeLegacyAdvertisingPduView& pdu,
                                           uint8_t rssi);

@@ -5395,6 +5395,40 @@ void LeController::IncomingLeConnectedIsochronousPdu(LinkLayerPacketView incomin
   } while (remaining_size > 0);
 }
 
+void LeController::BuildLeBigInfoAcad(uint8_t advertising_handle, std::vector<uint8_t>& acad) {
+  // Query the BIG information for this advertising handle from the link layer.
+  BigInfoFfi big_info{};
+  if (!link_layer_get_big_info(ll_.get(), advertising_handle, &big_info)) {
+    return;
+  }
+
+  // Encode the BIGInfo as an ACAD AD structure, using the "BIGInfo AD Type"
+  // (0x2C, cf Vol 6, Part B § 1.3.1) announced on the AUX_SYNC_IND ACAD field:
+  //   [AD Length][AD Type 0x2C] [Num_BIS][NSE][ISO_Interval:2][BN][PTO][IRC]
+  //   [Max_PDU:2][SDU_Interval:3][Max_SDU:2][PHY][Framing][Encryption]
+  acad.push_back(0x2C);  // AD Type: BIGInfo
+  acad.push_back(big_info.num_bis);
+  acad.push_back(big_info.nse);
+  acad.push_back(static_cast<uint8_t>(big_info.iso_interval & 0xff));
+  acad.push_back(static_cast<uint8_t>((big_info.iso_interval >> 8) & 0xff));
+  acad.push_back(big_info.bn);
+  acad.push_back(big_info.pto);
+  acad.push_back(big_info.irc);
+  acad.push_back(static_cast<uint8_t>(big_info.max_pdu & 0xff));
+  acad.push_back(static_cast<uint8_t>((big_info.max_pdu >> 8) & 0xff));
+  acad.push_back(static_cast<uint8_t>(big_info.sdu_interval & 0xff));
+  acad.push_back(static_cast<uint8_t>((big_info.sdu_interval >> 8) & 0xff));
+  acad.push_back(static_cast<uint8_t>((big_info.sdu_interval >> 16) & 0xff));
+  acad.push_back(static_cast<uint8_t>(big_info.max_sdu & 0xff));
+  acad.push_back(static_cast<uint8_t>((big_info.max_sdu >> 8) & 0xff));
+  acad.push_back(big_info.phy);
+  acad.push_back(big_info.framing);
+  acad.push_back(big_info.encryption);
+
+  // Prepend the AD Length octet (length of AD Type + AD Data).
+  acad.insert(acad.begin(), static_cast<uint8_t>(acad.size()));
+}
+
 void LeController::HandleAcl(bluetooth::hci::AclView acl) {
   uint16_t connection_handle = acl.GetHandle();
   auto pb_flag = acl.GetPacketBoundaryFlag();
