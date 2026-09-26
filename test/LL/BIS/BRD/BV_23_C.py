@@ -96,13 +96,7 @@ class Test(BVBroadcastSetupAndData):
         # advertising train of the IUT. Because Encryption is disabled, the
         # BIGInfo includes no encryption fields and carries the BN bit set to 1
         # (cf. LL.TS.p28 Table 4.11-3).
-        big_info = await self.expect_ll(
-            ll.LeBigInfoAdvertisingPdu,
-            ignored_pdus=[
-                ll.LeExtendedAdvertisingPdu,
-                ll.LePeriodicAdvertisingPdu,
-            ],
-        )
+        big_info = await self.expect_big_info_advertising()
         self.assertEqual(big_info.source_address, controller.address)
         self.assertEqual(big_info.sid, self.Advertising_SID)
         self.assertEqual(big_info.num_bis, self.Num_BIS)

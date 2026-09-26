@@ -20,6 +20,7 @@ import sys
 import typing
 import unittest
 from ctypes import *
+from dataclasses import dataclass
 from importlib import resources
 from rootcanal.packets import hci, ll, llcp
 from rootcanal.packets.hci import ErrorCode
@@ -41,6 +42,27 @@ class Any:
     @property
     def name(self) -> str:
         return "_"
+
+
+@dataclass
+class BigInfo:
+    """BIG parameters carried by the BIGInfo announced on a periodic
+    advertising train (parsed from the ACAD AD structure, AD Type 0x2C)."""
+
+    source_address: hci.Address
+    sid: int
+    num_bis: int
+    nse: int
+    iso_interval: int
+    bn: int
+    pto: int
+    irc: int
+    max_pdu: int
+    sdu_interval: int
+    max_sdu: int
+    phy: int
+    framing: int
+    encryption: int
 
 
 class ControllerTest(unittest.IsolatedAsyncioTestCase):
@@ -194,6 +216,71 @@ class ControllerTest(unittest.IsolatedAsyncioTestCase):
                         expected_pdu.show()
 
                 self.assertTrue(False)
+
+    async def expect_big_info_advertising(
+        self, timeout: int = 3
+    ) -> BigInfo:
+        """Wait for the BIGInfo announced on the periodic advertising train.
+
+        In the emulated link the BIGInfo is carried as an ACAD AD structure
+        (AD type 0x2C) inside the LePeriodicAdvertisingPdu announced by the
+        broadcaster (cf Vol 6, Part B). This helper reads that ACAD and returns
+        the BIG configuration as a BigInfo object.
+        """
+        async with asyncio.timeout(timeout):
+            while True:
+                packet = await self.controller.receive_ll()
+                pdu = ll.LinkLayerPacket.parse_all(packet)
+
+                if isinstance(pdu, ll.LeExtendedAdvertisingPdu):
+                    continue
+                if not isinstance(pdu, ll.LePeriodicAdvertisingPdu):
+                    print("received unexpected pdu:")
+                    pdu.show()
+                    self.assertTrue(False)
+
+                acad = pdu.acad
+                if isinstance(acad, (list, bytearray)):
+                    acad = bytes(acad)
+                # Parse the ACAD AD structures and find the BIGInfo AD (0x2C).
+                big = None
+                offset = 0
+                while offset + 1 < len(acad):
+                    ad_length = acad[offset]
+                    if ad_length == 0 or offset + 1 + ad_length > len(acad):
+                        break
+                    if acad[offset + 1] == 0x2C:
+                        big = acad[offset + 2 : offset + 1 + ad_length]
+                        break
+                    offset += 1 + ad_length
+                if big is None:
+                    # This advert train does not announce a BIG yet.
+                    continue
+
+                if len(big) < 17:
+                    print("BIGInfo ACAD is too short:")
+                    print(f"- {big.hex()}")
+                    self.assertTrue(False)
+
+                sdu_interval = (
+                    big[9] | (big[10] << 8) | (big[11] << 16)
+                )
+                return BigInfo(
+                    source_address=pdu.source_address,
+                    sid=pdu.sid,
+                    num_bis=big[0],
+                    nse=big[1],
+                    iso_interval=int.from_bytes(big[2:4], "little"),
+                    bn=big[4],
+                    pto=big[5],
+                    irc=big[6],
+                    max_pdu=int.from_bytes(big[7:9], "little"),
+                    sdu_interval=sdu_interval,
+                    max_sdu=int.from_bytes(big[12:14], "little"),
+                    phy=big[14],
+                    framing=big[15],
+                    encryption=big[16],
+                )
 
     async def expect_llcp(
         self,

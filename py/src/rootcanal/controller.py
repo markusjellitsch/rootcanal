@@ -26,9 +26,10 @@ from typing import Optional, Tuple, Union
 from . import binaries
 from .packets import hci, ll, llcp
 
-with binaries.get_package_binary_resource_path("librootcanal_ffi.so") as so_path:
-    rootcanal = cdll.LoadLibrary(str(so_path))
-    rootcanal.ffi_controller_new.restype = c_void_p
+rootcanal = cdll.LoadLibrary(
+    binaries.get_package_binary_resource_path("librootcanal_ffi.so")
+)
+rootcanal.ffi_controller_new.restype = c_void_p
 
 
 SEND_HCI_FUNC = CFUNCTYPE(None, c_void_p, c_int, POINTER(c_ubyte), c_size_t)

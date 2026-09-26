@@ -195,13 +195,7 @@ class Test(ControllerTest):
         # 3. The Lower Tester receives the BIGInfo announced on the periodic
         # advertising train of the IUT, confirming the BIG configuration
         # (BIS_Count, Max_SDU, SID, ...).
-        big_info = await self.expect_ll(
-            ll.LeBigInfoAdvertisingPdu,
-            ignored_pdus=[
-                ll.LeExtendedAdvertisingPdu,
-                ll.LePeriodicAdvertisingPdu,
-            ],
-        )
+        big_info = await self.expect_big_info_advertising()
         self.assertEqual(big_info.source_address, controller.address)
         self.assertEqual(big_info.sid, self.Advertising_SID)
         self.assertEqual(big_info.num_bis, self.Num_BIS)
