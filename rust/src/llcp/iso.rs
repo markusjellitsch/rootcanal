@@ -2053,8 +2053,10 @@ impl IsoManager {
             || bn > nse
             || irc == 0
             || irc > nse
+            // The BIGInfo subevent count NSE must be at least BN * IRC so that
+            // each BIS has enough subevents to carry the BN PDU transmissions
+            // plus the IRC retransmissions (cf Vol 6, Part B).
             || (nse as u16) < (bn as u16) * (irc as u16)
-            || (nse as u16) > (bn as u16) * (irc as u16) + (pto as u16) * (bn as u16)
             || pto > 0x0F
             || (phy != 1 && phy != 2 && phy != 3)
             || packing > 1
